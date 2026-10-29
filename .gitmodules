@@ -1,4 +1,4 @@
 [submodule "modules/juce"]
 	path = modules/juce
-	url = https://github.com/TNT-Music-Studios/JUCE.git
+	url = https://github.com/tnt-music-studios/JUCE.git
 	branch = develop
