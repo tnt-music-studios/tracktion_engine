@@ -30,7 +30,9 @@ using namespace std::literals;
 
 #include "../../modules/tracktion_graph/tracktion_graph/tracktion_TestUtilities.h"
 
-#include "timestretch/tracktion_TempoDetect.h"
+#if TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
+ #include "timestretch/tracktion_TempoDetect.h"
+#endif
 #include "model/automation/modifiers/tracktion_ModifierInternal.h"
 
 #include "model/edit/tracktion_OldEditConversion.h"

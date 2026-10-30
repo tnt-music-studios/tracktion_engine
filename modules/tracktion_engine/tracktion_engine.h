@@ -190,6 +190,18 @@
  #define TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH 0
 #endif
 
+/** Config: TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
+    Enables tempo detection with the SoundTouch library: the TempoDetect class and
+    AudioClipBase::performTempoDetect().
+
+    N.B. SoundTouch is not owned by Tracktion and is licensed under the LGPL 2.1.
+    Disable this to build without any SoundTouch code when
+    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH is also disabled.
+*/
+#ifndef TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
+ #define TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH 1
+#endif
+
 /** Config: TRACKTION_ENABLE_ABLETON_LINK
     Enables Ableton Link support.
     You must have Link in your search path if you enable this.

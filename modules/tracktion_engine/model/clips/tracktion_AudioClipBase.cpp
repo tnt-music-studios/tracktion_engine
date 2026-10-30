@@ -11,6 +11,7 @@
 namespace tracktion { inline namespace engine
 {
 
+#if TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
 //==============================================================================
 /**
     Performs a tempo detection task on a background thread.
@@ -93,6 +94,7 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TempoDetectTask)
 };
+#endif
 
 
 //==============================================================================
@@ -1256,6 +1258,7 @@ LoopInfo AudioClipBase::autoDetectBeatMarkers (const LoopInfo& current, bool aut
     return res;
 }
 
+#if TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
 bool AudioClipBase::performTempoDetect()
 {
     TempoDetectTask tempoDetectTask (edit.engine, getCurrentSourceFile());
@@ -1270,6 +1273,7 @@ bool AudioClipBase::performTempoDetect()
 
     return true;
 }
+#endif
 
 juce::StringArray AudioClipBase::getRootNoteChoices (Engine& e)
 {

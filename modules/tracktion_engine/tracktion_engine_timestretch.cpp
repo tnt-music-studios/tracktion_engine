@@ -74,11 +74,16 @@
 
 namespace tracktion { inline namespace engine
 {
+   #if TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
     #include "3rd_party/soundtouch/source/SoundTouch/BPMDetect.cpp"
     #undef max
     #include "3rd_party/soundtouch/source/SoundTouch/PeakFinder.cpp"
     #undef max
+   #endif
+
+   #if TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH || TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH
     #include "3rd_party/soundtouch/source/SoundTouch/FIFOSampleBuffer.cpp"
+   #endif
 
    #if TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH
     #include "3rd_party/soundtouch/source/SoundTouch/AAFilter.cpp"

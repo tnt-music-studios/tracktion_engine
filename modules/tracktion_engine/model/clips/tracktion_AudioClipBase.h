@@ -382,11 +382,14 @@ public:
     */
     LoopInfo autoDetectBeatMarkers (const LoopInfo& current, bool autoBeat, float sensitivity) const;
 
+   #if TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
     /** Performs a tempo-detection task and if successful sets the clip's LoopInfo tempo to this.
         @returns true if the tempo was sensibly detected
         [[ blocks ]]
+        @see TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
     */
     bool performTempoDetect();
+   #endif
 
     /** Returns an array of the root note choices e.g. "C#" etc. */
     static juce::StringArray getRootNoteChoices (Engine&);
@@ -691,7 +694,9 @@ private:
     //==============================================================================
     juce::ReferenceCountedObjectPtr<ARAFileReader> araProxy;
 
+   #if TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH
     class TempoDetectTask;
+   #endif
     class BeatSensitivityComp;
 
     std::shared_ptr<LaunchHandle> launchHandle;
