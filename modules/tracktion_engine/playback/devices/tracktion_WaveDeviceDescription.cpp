@@ -116,6 +116,9 @@ static void describeStandardDevices (std::vector<WaveDeviceDescription>& descrip
 
 bool WaveDeviceDescriptionList::initialiseFromCustomBehaviour (juce::AudioIODevice& device, EngineBehaviour& eb)
 {
+    inputs.clear();
+    outputs.clear();
+
     if (eb.isDescriptionOfWaveDevicesSupported())
     {
         eb.describeWaveDevices (inputs, device, true);
@@ -289,6 +292,9 @@ void WaveDeviceDescriptionList::initialise (Engine& engine, juce::AudioIODevice&
 
 bool WaveDeviceDescriptionList::updateForDevice (juce::AudioIODevice& device)
 {
+    if (wasInitialisedFromCustomBehaviour)
+        return false;
+
     if (device.getName() != deviceName)
         return false;
 
