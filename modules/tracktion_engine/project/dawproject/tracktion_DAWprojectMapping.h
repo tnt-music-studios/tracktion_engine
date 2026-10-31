@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine { namespace dawproject
-{
+namespace tracktion::inline engine { namespace dawproject {
 
 //==============================================================================
 /** DAWproject XML element and attribute names. */
@@ -24,6 +23,8 @@ namespace xml
     static constexpr auto Structure = "Structure";
     static constexpr auto Arrangement = "Arrangement";
     static constexpr auto Scenes = "Scenes";
+    static constexpr auto Scene = "Scene";
+    static constexpr auto Content = "Content";
 
     // Structure elements
     static constexpr auto Track = "Track";
@@ -232,7 +233,7 @@ private:
 /** Velocity conversion between tracktion (0-127 int) and DAWproject (0.0-1.0 normalized). */
 inline float velocityToNormalized (int velocity)
 {
-    return juce::jlimit (0.0f, 1.0f, velocity / 127.0f);
+    return juce::jlimit (0.0f, 1.0f, static_cast<float> (velocity) / 127.0f);
 }
 
 inline int normalizedToVelocity (float normalized)
@@ -335,6 +336,18 @@ inline juce::Colour dawprojectStringToColour (const juce::String& str)
 }
 
 //==============================================================================
+/** Pan conversion between tracktion (-1.0 to 1.0) and DAWproject (0.0-1.0 normalized, 0.5 = centre). */
+inline float normalizedToPan (double normalized)
+{
+    return juce::jlimit (-1.0f, 1.0f, static_cast<float> (normalized * 2.0 - 1.0));
+}
+
+inline double panToNormalized (float pan)
+{
+    return juce::jlimit (0.0, 1.0, (static_cast<double> (pan) + 1.0) / 2.0);
+}
+
+//==============================================================================
 /** Volume conversion between linear gain and decibels. */
 inline double gainToDecibels (float gain)
 {
@@ -400,4 +413,4 @@ inline bool parseBool (const juce::String& str, bool defaultValue = false)
     return str.equalsIgnoreCase ("true") || str == "1";
 }
 
-}}} // namespace tracktion::engine::dawproject
+}} // namespace tracktion::inline engine::dawproject

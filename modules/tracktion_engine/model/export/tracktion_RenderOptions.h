@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /** Represents a set of user properties used to control a render operation, using
@@ -127,10 +126,12 @@ public:
 
     juce::File getDestFile() const noexcept                     { return destFile; }
     juce::String getFileExtension() const;
+    juce::String getCurrentFileExtension();
 
     TargetFileFormat getFormat() const noexcept                 { return format; }
     int getBitDepth() const                                     { return bitDepth; }
-    bool getStereo() const                                      { return stereo; }
+    ChannelConfiguration getChannelConfiguration() const;
+    void setChannelConfiguration (const ChannelConfiguration&);
     double getSampleRate() const                                { return sampleRate; }
     bool shouldAddMetadata() const                              { return addMetadata; }
 
@@ -146,7 +147,12 @@ public:
     void setIncludePlugins (bool includePlugins)                { usePlugins = includePlugins; }
     void setAddRenderOption (AddRenderOptions options)          { addRenderOptions = options; }
     void setEndAllowance (TimeDuration time)                    { endAllowance = time; }
-    void setFilename (juce::String, bool canPromptToOverwriteExisting);
+    /** Sets the destination file. As this may need to asynchronously prompt to
+        overwrite an existing file, the optional callback is invoked once the
+        filename has actually been updated.
+    */
+    void setFilename (juce::String, bool canPromptToOverwriteExisting,
+                      std::function<void()> onComplete = nullptr);
     void updateHash();
 
     //==============================================================================
@@ -163,7 +169,7 @@ public:
 
     juce::CachedValue<bool> createMidiFile;
     juce::CachedValue<TargetFileFormat> format;
-    juce::CachedValue<bool> stereo;
+    juce::CachedValue<juce::String> channelConfigStr;
     juce::CachedValue<double> sampleRate;
     juce::CachedValue<int> bitDepth, qualityIndex;
     juce::CachedValue<double> rmsLevelDb, peakLevelDb;
@@ -206,10 +212,9 @@ private:
     void updateFileName();
     void updateOptionsForFormat();
     void updateDefaultFilename (Edit*);
-    juce::String getCurrentFileExtension();
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {

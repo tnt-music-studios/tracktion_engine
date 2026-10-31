@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 #ifndef DOXYGEN
 namespace test_utilities
@@ -38,6 +37,29 @@ namespace test_utilities
         return true;
     }
    #endif
+
+    //==============================================================================
+    inline void runDispatchLoop (int milliseconds)
+    {
+       #if JUCE_MODAL_LOOPS_PERMITTED
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (milliseconds);
+       #else
+        juce::Thread::sleep (milliseconds);
+       #endif
+    }
+
+    //==============================================================================
+    /** Calls EditFileOperations::save synchronously for test use.
+        Only safe when no dialogs will be shown (warnOfFailure=false, offerToDiscardChanges=false).
+    */
+    inline bool saveEditSync (Edit& edit, bool warnOfFailure = false,
+                               bool forceSave = true, bool offerToDiscard = false)
+    {
+        bool result = false;
+        EditFileOperations (edit).save (warnOfFailure, forceSave, offerToDiscard,
+                                        [&result] (bool ok) { result = ok; });
+        return result;
+    }
 
     //==============================================================================
     inline std::optional<juce::AudioBuffer<float>> loadFileInToBuffer (juce::AudioFormatManager& formatManager, const juce::File& f)
@@ -98,6 +120,10 @@ namespace test_utilities
         {
             tempDir.createDirectory();
             tempDir.setAsCurrentWorkingDirectory();
+            // Re-read the CWD so tempDir holds the OS-canonical path
+            // (macOS resolves /var → /private/var, which would otherwise
+            // cause string comparisons against getCurrentWorkingDirectory() to fail).
+            tempDir = juce::File::getCurrentWorkingDirectory();
         }
 
         ~TempCurrentWorkingDirectory()
@@ -220,4 +246,4 @@ namespace test_utilities
 }
 #endif
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

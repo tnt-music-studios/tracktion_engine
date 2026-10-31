@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 TrackInsertPoint::TrackInsertPoint (Track* parent, Track* preceding)
     : parentTrackID (parent != nullptr ? parent->itemID : EditItemID()),
@@ -399,8 +398,8 @@ void moveAutomation (const juce::Array<TrackAutomationSection>& origSections, Ti
                 if (param->getCurve().getNumPoints() > 0)
                 {
                     TrackAutomationSection::ActiveParameters ap (*param);
-                    ap.curve.setState (param->getCurve().state);
                     ap.curve.setParentState (param->getCurve().parentState);
+                    ap.curve.setState (param->getCurve().state);
                     ap.curve.setParameterID (param->getCurve().getParameterID());
 
                     section.activeParameters.add (ap);
@@ -567,4 +566,4 @@ void moveAutomation (const juce::Array<TrackAutomationSection>& origSections, Ti
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

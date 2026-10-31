@@ -14,8 +14,7 @@
 #include <cstdlib>
 #include <juce_core/juce_core.h>
 
-namespace tracktion { inline namespace core
-{
+namespace tracktion::inline core {
 
 struct TimeDuration;
 struct BeatDuration;
@@ -467,7 +466,7 @@ inline constexpr TimePosition TimePosition::fromSeconds (T positionInSeconds)
 template<typename IntType>
 inline constexpr TimePosition TimePosition::fromSamples (IntType samplePosition, double sampleRate)
 {
-    return TimePosition::fromSeconds (samplePosition / sampleRate);
+    return TimePosition::fromSeconds (static_cast<double> (samplePosition) / sampleRate);
 }
 
 inline constexpr double TimePosition::inSeconds() const
@@ -533,7 +532,7 @@ inline constexpr TimeDuration TimeDuration::fromSeconds (T positionInSeconds)
 template<typename IntType>
 inline constexpr TimeDuration TimeDuration::fromSamples (IntType samplePosition, double sampleRate)
 {
-    return TimeDuration::fromSeconds (samplePosition / sampleRate);
+    return TimeDuration::fromSeconds (double (samplePosition) / sampleRate);
 }
 
 inline constexpr double TimeDuration::inSeconds() const
@@ -851,8 +850,7 @@ inline std::ostream& operator<< (std::ostream& os, const TimePosition& v) { os <
 inline std::ostream& operator<< (std::ostream& os, const BeatDuration& v) { os << v.inBeats(); return os; }
 inline std::ostream& operator<< (std::ostream& os, const BeatPosition& v) { os << v.inBeats(); return os; }
 
-}} // namespace tracktion
-
+} // namespace tracktion::inline core
 
 //==============================================================================
 //==============================================================================

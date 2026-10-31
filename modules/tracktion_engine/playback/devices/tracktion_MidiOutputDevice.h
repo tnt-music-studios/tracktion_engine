@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** */
 class MidiOutputDevice   : public OutputDevice
@@ -17,6 +16,8 @@ class MidiOutputDevice   : public OutputDevice
 public:
     MidiOutputDevice (Engine&, juce::MidiDeviceInfo);
     ~MidiOutputDevice() override;
+
+    juce::String getDeviceTypeDescription() const override          { return NEEDS_TRANS("MIDI Output"); }
 
     juce::String openDevice() override;
     void closeDevice() override;
@@ -80,6 +81,9 @@ public:
 
     MidiProgramManager& getMidiProgramManager() const   { return engine.getMidiProgramManager(); }
 
+    /** Measures MIDI activity for outgoing messages so the UI can show a meter. */
+    LevelMeasurer levelMeasurer;
+
 protected:
     //==============================================================================
     friend class MidiOutputDeviceInstance;
@@ -100,6 +104,7 @@ protected:
     double sampleRate = 0;
 
     std::unique_ptr<juce::MidiOutput> outputDevice;
+    juce::SpinLock outputDeviceLock;
     bool sendingMMC = false;
     bool sendControllerMidiClock = false;
     bool softDevice = false;
@@ -160,4 +165,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiOutputDeviceInstance)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

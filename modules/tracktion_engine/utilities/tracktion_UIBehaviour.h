@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Create a subclass of UIBehaviour to custom UI elements created by the engine
@@ -42,8 +41,17 @@ public:
     virtual bool perform (const juce::ApplicationCommandTarget::InvocationInfo&)    { return false; }
 
     //==============================================================================
-    /** Should show the new plugin window and creates the Plugin the user selects. */
+    /** Should show the new plugin window and creates the Plugin the user selects.
+        @deprecated Use the async callback version instead.
+    */
     virtual Plugin::Ptr showMenuAndCreatePlugin (Plugin::Type, Edit&)               { return {}; }
+
+    /** Async version — shows the plugin menu and calls back with the created plugin (or nullptr). */
+    virtual void showMenuAndCreatePluginAsync (Plugin::Type types, Edit& edit, std::function<void (Plugin::Ptr)> callback)
+    {
+        if (callback)
+            callback (showMenuAndCreatePlugin (types, edit));
+    }
 
     /** Must create a suitable Component plugin window for the given PluginWindowState.
         The type of state should be checked and used accordingly e.g. Plugin::WindowState
@@ -72,22 +80,16 @@ public:
     /** Should display a dismissable alert window. N.B. this should be non-blocking. */
     virtual void showWarningAlert (const juce::String& title, const juce::String& message);
 
-    /** Should display a dismissable alert window.
-        Returns true for OK.
-        N.B. this is blocking.
-    */
-    virtual bool showOkCancelAlertBox (const juce::String& title, const juce::String& message,
-                                       const juce::String& ok = {},
-                                       const juce::String& cancel = {});
+    /** Async ok/cancel alert. Calls the callback with true for OK, false for cancel. */
+    virtual void showOkCancelAlertBoxAsync (const juce::String& title, const juce::String& message,
+                                             const juce::String& ok, const juce::String& cancel,
+                                             std::function<void (bool)> callback);
 
-    /** Should display a dismissable alert window.
-        Returns 1 = yes, 2 = no, 0 = cancel
-        N.B. this is blocking.
-    */
-    virtual int showYesNoCancelAlertBox (const juce::String& title, const juce::String& message,
-                                         const juce::String& yes = {},
-                                         const juce::String& no = {},
-                                         const juce::String& cancel = {});
+    /** Async yes/no/cancel alert. Calls the callback with 1=yes, 2=no, 0=cancel. */
+    virtual void showYesNoCancelAlertBoxAsync (const juce::String& title, const juce::String& message,
+                                                const juce::String& yes, const juce::String& no,
+                                                const juce::String& cancel,
+                                                std::function<void (int)> callback);
 
     /** Should display a temporary information message, usually in the same place. */
     virtual void showInfoMessage (const juce::String& message);
@@ -169,6 +171,27 @@ public:
         selected items that includes all clips that should be edited with the selected
         clip */
     virtual SelectableList getAssociatedClipsToEdit (const SelectableList& items)   { return items; }
+
+    //==============================================================================
+    /** Should return the number of clip colours in your UI's palette. Control surfaces
+        are sent clip colours as an index in the range 1 to this number.
+        By default this returns 18.
+    */
+    virtual int getNumClipColourIndexes()                                           { return 18; }
+
+    /** Should return the palette index a control surface should use to show a clip,
+        e.g. on clip launcher pads. This should be 0 if the clip has no colour, otherwise
+        1 to getNumClipColourIndexes().
+        By default this quantises the hue of getClipColourForControlSurface().
+    */
+    virtual int getClipColourIndexForControlSurface (const Clip&);
+
+    /** Should return the colour a control surface should use to show a clip, e.g. on
+        clip launcher pads. Override this if your UI draws clips using a different colour
+        to Clip::getColour(), such as a user palette or the colour of the track they're on.
+        By default this returns Clip::getColour().
+    */
+    virtual juce::Colour getClipColourForControlSurface (const Clip&);
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

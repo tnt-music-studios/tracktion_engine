@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 juce::StringRef PropertyStorage::settingToString (SettingID setting)
 {
@@ -17,6 +16,7 @@ juce::StringRef PropertyStorage::settingToString (SettingID setting)
     {
         case SettingID::audio_device_setup:                 return "audio_device_setup";
         case SettingID::audiosettings:                      return "audiosettings";
+        case SettingID::audioDeviceLayoutPresets:           return "audioDeviceLayoutPresets";
         case SettingID::addAntiDenormalNoise:               return "addAntiDenormalNoiseXXX";    // This setting is obsolete (hopefully)
         case SettingID::autoFreeze:                         return "autoFreeze";
         case SettingID::autoTempoMatch:                     return "AutoTempoMatch";
@@ -126,6 +126,7 @@ juce::StringRef PropertyStorage::settingToString (SettingID setting)
         case SettingID::renderTrimSilence:                  return "renderTrimSilence";
         case SettingID::renderSampRate:                     return "renderSampRate";
         case SettingID::renderStereo:                       return "renderStereo";
+        case SettingID::renderChannelConfig:                return "renderChannelConfig";
         case SettingID::renderBits:                         return "renderBits";
         case SettingID::renderDither:                       return "renderDither";
         case SettingID::quality:                            return "quality";
@@ -243,4 +244,4 @@ juce::File PropertyStorage::getDefaultLoadSaveDirectory (ProjectItem::Category)
     return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

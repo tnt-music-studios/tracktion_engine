@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** */
 class ClipTrack   : public Track,
@@ -47,9 +46,6 @@ public:
     int getIndexOfNextTrackItemAt (TimePosition) override;
     TrackItem* getNextTrackItemAt (TimePosition) override;
 
-    /** inserts space and moves everything up */
-    void insertSpaceIntoTrack (TimePosition, TimeDuration) override;
-
     //==============================================================================
     TimeDuration getLength() const;
     TimeDuration getLengthIncludingInputTracks() const;
@@ -73,7 +69,7 @@ public:
     juce::ReferenceCountedObjectPtr<WaveAudioClip> insertWaveClip (const juce::String& name, const juce::File& sourceFile,
                                                                    ClipPosition position, bool deleteExistingClips);
 
-    juce::ReferenceCountedObjectPtr<WaveAudioClip> insertWaveClip (const juce::String& name, ProjectItemID sourceID,
+    juce::ReferenceCountedObjectPtr<WaveAudioClip> insertWaveClip (const juce::String& name, ProjectItemRef sourceID,
                                                                    ClipPosition position, bool deleteExistingClips);
 
     juce::ReferenceCountedObjectPtr<MidiClip> insertMIDIClip (TimeRange position,
@@ -82,7 +78,7 @@ public:
     juce::ReferenceCountedObjectPtr<MidiClip> insertMIDIClip (const juce::String& name, TimeRange position,
                                                               SelectionManager* selectionManagerToSelectWith);
 
-    juce::ReferenceCountedObjectPtr<EditClip> insertEditClip (TimeRange position, ProjectItemID sourceID);
+    juce::ReferenceCountedObjectPtr<EditClip> insertEditClip (TimeRange position, ProjectItemRef sourceID);
 
     void deleteRegion (TimeRange, SelectionManager*);
     void deleteRegionOfClip (Clip::Ptr, TimeRange, SelectionManager*);
@@ -92,6 +88,9 @@ public:
 
     /** split all clips at this time */
     void splitAt (TimePosition);
+
+    /** Inserts space at the given time, moving clips whose center is after that point. */
+    void insertSpace (TimePosition, TimeDuration);
 
     /** finds the next cut point */
     TimePosition getNextTimeOfInterest (TimePosition afterThisTime);
@@ -138,4 +137,4 @@ protected:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ClipTrack)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

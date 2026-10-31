@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** Manages a list of items that are currently selected.
     @see Selectable
@@ -184,7 +183,8 @@ private:
     void selectionChanged();
     void clearList();
 
+    JUCE_DECLARE_WEAK_REFERENCEABLE (SelectionManager)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SelectionManager)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

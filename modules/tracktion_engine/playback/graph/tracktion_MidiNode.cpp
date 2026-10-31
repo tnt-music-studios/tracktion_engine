@@ -12,8 +12,7 @@
 
 #define TRACKTION_SANITY_CHECK_MIDI_BUFFERS 0
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 MidiNode::MidiNode (std::vector<juce::MidiMessageSequence> sequences,
                     MidiList::TimeBase tb,
@@ -138,9 +137,12 @@ void MidiNode::processSection (Node::ProcessContext& pc,
 
     if (! getPlayHeadState().isContiguousWithPreviousBlock() || localTime.getStart() <= 0.00001 || shouldCreateMessagesForTime)
     {
+        const auto numEventsBefore = pc.buffers.midi.size();
         MidiNodeHelpers::createMessagesForTime (pc.buffers.midi, sequence, localTime.getStart(),
                                                 channelNumbers, clipLevel, useMPEChannelMode, midiSourceID,
                                                 controllerMessagesScratchBuffer);
+        MidiNodeHelpers::clampTimeStamps (pc.buffers.midi, numEventsBefore,
+                                          localTime.getLength() * secondsPerTimeBase * (pc.numSamples - 1) / pc.numSamples);
         shouldCreateMessagesForTime = false;
     }
 
@@ -209,4 +211,4 @@ void MidiNode::processSection (Node::ProcessContext& pc,
 
 
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

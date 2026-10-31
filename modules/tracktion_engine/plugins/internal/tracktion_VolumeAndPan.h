@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     The built-in Tracktion volume/pan plugin.
@@ -61,7 +60,8 @@ public:
     void initialiseWithoutStopping (const PluginInitialisationInfo&) override;
     void deinitialise() override;
     void applyToBuffer (const PluginRenderContext&) override;
-    int getNumOutputChannelsGivenInputs (int numInputs) override    { return juce::jmax (2, numInputs); }
+    int getNumOutputChannelsGivenInputs (int numInputs) override    { return numInputs; }
+    BusLayout getBusses() const override   { return BusLayout::singleInOut (ChannelConfiguration::stereo(), ChannelConfiguration::none()); }
 
     void restorePluginStateFromValueTree (const juce::ValueTree&) override;
 
@@ -75,7 +75,7 @@ public:
 
     /// This is the time over which volume changes will be ramped, to avoid
     /// zipper noise.
-    double smoothingRampTimeSeconds = 0.05;
+    double smoothingRampTimeSeconds = 0.015;
 
 private:
     float lastVolumeBeforeMute = 0.0f;
@@ -92,4 +92,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VolumeAndPanPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

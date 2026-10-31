@@ -63,6 +63,7 @@ extern "C" char MacGetMacFSRefForREXDLL (FSRef* fsRef)
 
 //==============================================================================
 #include "selection/tracktion_Clipboard.cpp"
+#include "selection/tracktion_Clipboard.test.cpp"
 #include "selection/tracktion_Selectable.test.cpp"
 #include "selection/tracktion_SelectionManager.cpp"
 #include "selection/tracktion_SelectionManager.test.cpp"
@@ -78,6 +79,7 @@ extern "C" char MacGetMacFSRefForREXDLL (FSRef* fsRef)
 #include "utilities/tracktion_Envelope.cpp"
 #include "utilities/tracktion_FileUtilities.cpp"
 #include "utilities/tracktion_Oscillators.cpp"
+#include "utilities/tracktion_Oscillators.test.cpp"
 #include "utilities/tracktion_PropertyStorage.cpp"
 #include "utilities/tracktion_ParameterHelpers.cpp"
 #include "utilities/tracktion_UIBehaviour.cpp"
@@ -86,6 +88,9 @@ extern "C" char MacGetMacFSRefForREXDLL (FSRef* fsRef)
 #include "utilities/tracktion_Threads.cpp"
 #include "utilities/tracktion_BinaryData.cpp"
 #include "utilities/tracktion_ScreenSaverDefeater.cpp"
+#include "utilities/tracktion_ChannelConfiguration.cpp"
+#include "utilities/tracktion_ChannelConfiguration.test.cpp"
+#include "utilities/tracktion_BackgroundJobs.test.cpp"
 
 #ifdef __GNUC__
  #pragma GCC diagnostic pop

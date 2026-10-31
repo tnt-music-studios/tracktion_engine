@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -149,7 +148,7 @@ private:
 
                                 auto expression = new juce::XmlElement (IDs::PITCHBEND);
                                 expression->setAttribute (IDs::b, control->getDoubleAttribute (IDs::b));
-                                expression->setAttribute (IDs::v, range.convertFrom0to1 (control->getIntAttribute (IDs::val) / 16383.0f));
+                                expression->setAttribute (IDs::v, range.convertFrom0to1 (float (control->getIntAttribute (IDs::val)) / 16383.0f));
                                 note->addChildElement (expression);
                             }
                             // Channel Pressure
@@ -157,7 +156,7 @@ private:
                             {
                                 auto expression = new juce::XmlElement (IDs::PRESSURE);
                                 expression->setAttribute (IDs::b, control->getDoubleAttribute (IDs::b));
-                                expression->setAttribute (IDs::v, control->getIntAttribute (IDs::val) / 16383.0f);
+                                expression->setAttribute (IDs::v, float (control->getIntAttribute (IDs::val)) / 16383.0f);
                                 note->addChildElement (expression);
                             }
 
@@ -867,4 +866,4 @@ private:
 juce::ValueTree updateLegacyEdit (const juce::ValueTree& v)   { return OldEditConversion::convert (v); }
 void updateLegacyEdit (juce::XmlElement& editXML)             { OldEditConversion::convert (editXML); }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

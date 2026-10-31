@@ -7,8 +7,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class AirWindowsBase;
 class AirWindowsPlugin;
@@ -53,6 +52,7 @@ public:
     //==============================================================================
     juce::String getSelectableDescription() override;
     int getNumOutputChannelsGivenInputs (int numInputChannels) override;
+    BusLayout getBusses() const override;
 
     //==============================================================================
     void initialise (const PluginInitialisationInfo&) override;
@@ -62,7 +62,6 @@ public:
     void resetToDefault();
 
     //==============================================================================
-    bool takesAudioInput() override                  { return true; }
     bool takesMidiInput() override                   { return true; }
     bool producesAudioWhenNoAudioInput() override    { return true; }
     bool canBeAddedToClip() override                 { return true; }
@@ -302,4 +301,4 @@ AIRWINDOWSPLUGIN(AirWindowscurve, "curve")
 AIRWINDOWSPLUGIN(AirWindowsuLawDecode, "u Law Decode")
 AIRWINDOWSPLUGIN(AirWindowsuLawEncode, "u Law Encode")
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

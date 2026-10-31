@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class PhysicalMidiInputDevice  : public MidiInputDevice
 {
@@ -39,7 +38,8 @@ public:
     void loadProps() override;
     void saveProps() override;
 
-    DeviceType getDeviceType() const override       { return InputDevice::physicalMidiDevice; }
+    DeviceType getDeviceType() const override               { return InputDevice::physicalMidiDevice; }
+    juce::String getDeviceTypeDescription() const override  { return TRANS("MIDI Input"); }
 
     bool isTakingControllerMessages = true;
 
@@ -87,4 +87,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PhysicalMidiInputDevice)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

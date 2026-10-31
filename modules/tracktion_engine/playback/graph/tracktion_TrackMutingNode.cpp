@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 TrackMuteState::TrackMuteState (Track& t, bool muteForInputsWhenRecording, bool processMidiWhenMuted_)
     : edit (t.edit), track (&t),
@@ -73,8 +72,11 @@ bool TrackMuteState::isBeingPlayed() const
 //==============================================================================
 size_t TrackMuteState::getItemID() const
 {
-    return track != nullptr ? (size_t) track->itemID.getRawID()
-                            : (size_t) edit.getProjectItemID().getRawID();
+    if (track != nullptr)
+        return (size_t) track->itemID.getRawID();
+
+    auto pid = edit.getProjectItemRef().getProjectItemID();
+    return pid ? (size_t) pid->getRawID() : size_t (0);
 }
 
 
@@ -112,6 +114,9 @@ void TrackMutingNode::prepareToPlay (const tracktion::graph::PlaybackInitialisat
         return;
 
     if (input->numOutputNodes > 1)
+        return;
+
+    if (! input->canShareOutputBuffer())
         return;
 
     const auto inputNumChannels = input->getNodeProperties().numberOfChannels;
@@ -184,4 +189,4 @@ void TrackMutingNode::rampBlock (choc::buffer::ChannelArrayView<float> view, flo
     buffer.applyGainRamp (0, buffer.getNumSamples(), start, end);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

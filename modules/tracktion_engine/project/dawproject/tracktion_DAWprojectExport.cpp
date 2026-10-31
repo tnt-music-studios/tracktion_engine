@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine { namespace dawproject
-{
+namespace tracktion::inline engine { namespace dawproject {
 
 //==============================================================================
 DAWprojectExporter::DAWprojectExporter (Edit& e, const WriteOptions& opts)
@@ -36,6 +35,9 @@ tl::expected<std::unique_ptr<juce::XmlElement>, juce::String> DAWprojectExporter
 
     // Arrangement element
     createArrangement (*project);
+
+    // Scenes element (clip launcher)
+    createScenes (*project);
 
     return project;
 }
@@ -80,13 +82,13 @@ juce::Result DAWprojectExporter::writeToFile (const juce::File& file)
     // Add project.xml
     auto projectXmlString = projectXml.toString();
     auto projectXmlData = juce::MemoryBlock (projectXmlString.toRawUTF8(), projectXmlString.getNumBytesAsUTF8());
-    zipBuilder.addEntry (new juce::MemoryInputStream (projectXmlData, false),
+    zipBuilder.addEntry (std::make_unique<juce::MemoryInputStream> (projectXmlData, false),
                          9, "project.xml", juce::Time::getCurrentTime());
 
     // Add metadata.xml
     auto metadataXmlString = metadataXml->toString();
     auto metadataXmlData = juce::MemoryBlock (metadataXmlString.toRawUTF8(), metadataXmlString.getNumBytesAsUTF8());
-    zipBuilder.addEntry (new juce::MemoryInputStream (metadataXmlData, false),
+    zipBuilder.addEntry (std::make_unique<juce::MemoryInputStream> (metadataXmlData, false),
                          9, "metadata.xml", juce::Time::getCurrentTime());
 
     // Add audio files
@@ -164,7 +166,9 @@ juce::XmlElement* DAWprojectExporter::createStructure (juce::XmlElement& parent)
 
         auto* pan = addChildElement (*masterChannel, xml::Pan);
         pan->setAttribute (xml::unit, xml::normalized);
-        pan->setAttribute (xml::value, masterVolPlugin->getPan());
+        pan->setAttribute (xml::min, 0.0);
+        pan->setAttribute (xml::max, 1.0);
+        pan->setAttribute (xml::value, panToNormalized (masterVolPlugin->getPan()));
     }
 
     return structure;
@@ -220,7 +224,9 @@ juce::XmlElement* DAWprojectExporter::createChannelElement (juce::XmlElement& pa
 
             auto* pan = addChildElement (*channel, xml::Pan);
             pan->setAttribute (xml::unit, xml::normalized);
-            pan->setAttribute (xml::value, volPlugin->getPan());
+            pan->setAttribute (xml::min, 0.0);
+            pan->setAttribute (xml::max, 1.0);
+            pan->setAttribute (xml::value, panToNormalized (volPlugin->getPan()));
         }
 
         // Mute
@@ -359,6 +365,69 @@ juce::XmlElement* DAWprojectExporter::createMarkersElement (juce::XmlElement& pa
     }
 
     return markers;
+}
+
+//==============================================================================
+juce::XmlElement* DAWprojectExporter::createScenes (juce::XmlElement& parent)
+{
+    auto& sceneList = edit.getSceneList();
+    auto scenes = sceneList.getScenes();
+
+    if (scenes.isEmpty())
+        return nullptr;
+
+    auto* scenesElement = addChildElement (parent, xml::Scenes);
+
+    int sceneIndex = 0;
+    for (auto* scene : scenes)
+    {
+        auto* sceneElement = addChildElement (*scenesElement, xml::Scene);
+        sceneElement->setAttribute (xml::id, idGenerator.generateID());
+
+        if (scene->name.get().isNotEmpty())
+            sceneElement->setAttribute (xml::name, scene->name.get());
+
+        if (! scene->colour.get().isTransparent())
+            sceneElement->setAttribute (xml::color, colourToDAWprojectString (scene->colour.get()));
+
+        auto* contentElement = addChildElement (*sceneElement, xml::Content);
+        auto* topLanes = addChildElement (*contentElement, xml::Lanes);
+        topLanes->setAttribute (xml::timeUnit, xml::seconds);
+
+        for (auto* track : getAllTracks (edit))
+        {
+            auto* audioTrack = dynamic_cast<AudioTrack*> (track);
+            if (audioTrack == nullptr)
+                continue;
+
+            auto trackIt = trackToId.find (track);
+            if (trackIt == trackToId.end())
+                continue;
+
+            auto slots = audioTrack->getClipSlotList().getClipSlots();
+            if (sceneIndex >= slots.size())
+                continue;
+
+            auto* slot = slots[sceneIndex];
+            if (slot == nullptr)
+                continue;
+
+            auto* slotClip = slot->getClip();
+            if (slotClip == nullptr)
+                continue;
+
+            auto* trackLanes = addChildElement (*topLanes, xml::Lanes);
+            trackLanes->setAttribute (xml::track, trackIt->second);
+            trackLanes->setAttribute (xml::timeUnit, xml::seconds);
+
+            auto* clipsElement = addChildElement (*trackLanes, xml::Clips);
+            createClipElement (*clipsElement, *slotClip);
+        }
+
+        ++sceneIndex;
+    }
+
+    return scenesElement;
 }
 
 //==============================================================================
@@ -683,7 +752,7 @@ void DAWprojectExporter::writePluginStates (juce::ZipFile::Builder& zipBuilder)
 
     for (const auto& entry : pluginStatesToEmbed)
     {
-        zipBuilder.addEntry (new juce::MemoryInputStream (entry.state, false),
+        zipBuilder.addEntry (std::make_unique<juce::MemoryInputStream> (entry.state, false),
                              9, entry.archivePath, juce::Time::getCurrentTime());
     }
 }
@@ -763,4 +832,4 @@ juce::String DAWprojectExporter::getDeviceRole (Plugin& plugin) const
     return xml::audioFX;
 }
 
-}}} // namespace tracktion::engine::dawproject
+}} // namespace tracktion::inline engine::dawproject

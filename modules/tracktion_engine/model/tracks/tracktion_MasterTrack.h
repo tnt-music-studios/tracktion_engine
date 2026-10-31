@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     A track to represent the master plugins.
@@ -38,8 +37,11 @@ public:
     /** @internal */
     bool canContainPlugin (Plugin*) const override;
 
+    /** Returns the channel configuration of the default output device. */
+    ChannelConfiguration getChannelConfiguration() const;
+
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MasterTrack)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

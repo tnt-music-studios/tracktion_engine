@@ -8,20 +8,23 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace NovationRemoteSL
 {
-    const uint8_t PID = 0x03;
+    // The SL's Automap sysex header is: F0 00 20 29 03 03 <version> <beta> <special template> 00 <command> ...
+    // The unit only acts on messages whose special template number matches the one it has loaded, so the
+    // Ableton template's ID (0x04) and version (0x12, 0x00) must be used or the unit ignores the handshake
+    // and stays offline, leaving its LEDs and LCD unresponsive.
+    const uint8_t PID = 0x04;
 
-    static uint8_t cmdOn[]         = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x20, 0x02, 0x03, 0x00, 0x01, 0x01, 0xF7 };
-    static uint8_t cmdOff[]        = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x20, 0x02, 0x03, 0x00, 0x01, 0x00, 0xF7 };
+    static uint8_t cmdOn[]         = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x12, 0x00, PID, 0x00, 0x01, 0x01, 0xF7 };
+    static uint8_t cmdOff[]        = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x12, 0x00, PID, 0x00, 0x01, 0x00, 0xF7 };
 
-    static uint8_t cmdClearLeft[]  = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x11, 0x04, PID, 0x00, 0x02, 0x02, 0x04, 0xF7 };
-    static uint8_t cmdClearRight[] = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x11, 0x04, PID, 0x00, 0x02, 0x02, 0x05, 0xF7 };
+    static uint8_t cmdClearLeft[]  = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x12, 0x00, PID, 0x00, 0x02, 0x02, 0x04, 0xF7 };
+    static uint8_t cmdClearRight[] = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x12, 0x00, PID, 0x00, 0x02, 0x02, 0x05, 0xF7 };
 
-    static uint8_t cmdWrite[]      = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x11, 0x04, PID, 0x00, 0x02, 0x01 };
+    static uint8_t cmdWrite[]      = { 0xF0, 0x00, 0x20, 0x29, 0x03, 0x03, 0x12, 0x00, PID, 0x00, 0x02, 0x01 };
 
     static const char* panLetter (float p) noexcept
     {
@@ -55,6 +58,10 @@ NovationRemoteSl::~NovationRemoteSl()
 void NovationRemoteSl::initialiseDevice (bool)
 {
     CRASH_TRACER
+
+    // The unit may have told us it went offline since the last time we initialised, so
+    // reset this or the handshake below can never bring the LEDs and LCD back to life
+    online = true;
 
     for (int i = 0; i < 8; ++i)
     {
@@ -166,7 +173,7 @@ void NovationRemoteSl::acceptMidiMessage (int, const juce::MidiMessage& m)
             int cmd  = d[10];
             int data = d[11];
 
-            if (host == 3 && cmd == 1)
+            if (host == NovationRemoteSL::PID && cmd == 1)
             {
                 online = data == 1;
 
@@ -193,9 +200,9 @@ void NovationRemoteSl::acceptMidiMessage (int, const juce::MidiMessage& m)
                 setRightMode(rmVol);
 
             if (rightMode == rmPan)
-                userMovedPanPot(cn - 0x10, m.getControllerValue() / 127.0f * 2.0f - 1.0f);
+                userMovedPanPot(cn - 0x10, static_cast<float> (m.getControllerValue()) / 127.0f * 2.0f - 1.0f);
             else
-                userMovedFader(cn - 0x10, m.getControllerValue() / 127.0f);
+                userMovedFader(cn - 0x10, static_cast<float> (m.getControllerValue()) / 127.0f);
         }
         // right - mute buttons
         if (cn >= 0x28 && cn <= 0x2f)
@@ -327,7 +334,7 @@ void NovationRemoteSl::acceptMidiMessage (int, const juce::MidiMessage& m)
                 if (std::strlen (param[cn - 0x00].label) > 0)
                 {
                     param[cn - 0x00].value = juce::jlimit (0.0f, 1.0f,
-                                                           param[cn - 0x00].value + (m.getControllerValue() - 64) / 150.0f);
+                                                           param[cn - 0x00].value + static_cast<float> (m.getControllerValue() - 64) / 150.0f);
 
                     userMovedParameterControl (cn - 0x00, param[cn - 0x00].value);
                 }
@@ -341,7 +348,7 @@ void NovationRemoteSl::acceptMidiMessage (int, const juce::MidiMessage& m)
                 if (leftMode == lmParam1)
                     setLeftMode (lmParam2);
 
-                userMovedParameterControl (cn - 0x08 + 8, m.getControllerValue() / 127.0f);
+                userMovedParameterControl (cn - 0x08 + 8, static_cast<float> (m.getControllerValue()) / 127.0f);
             }
         }
         // lock
@@ -833,4 +840,4 @@ juce::String NovationRemoteSl::padAndLimit (const juce::String& s, int max)
     return {};
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

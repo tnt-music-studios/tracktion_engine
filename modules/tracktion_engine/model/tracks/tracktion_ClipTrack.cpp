@@ -8,20 +8,15 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 struct ClipTrack::CollectionClipList  : public juce::ValueTree::Listener
 {
-    CollectionClipList (ClipTrack& t, juce::ValueTree& v) : ct (t), state (v)
+    CollectionClipList (ClipTrack& t, juce::ValueTree& v)
+        : ct (t), state (v)
     {
         state.addListener (this);
-    }
-
-    ~CollectionClipList() override
-    {
-        state.removeListener (this);
     }
 
     void valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier& id) override
@@ -149,7 +144,7 @@ struct ClipTrack::CollectionClipList  : public juce::ValueTree::Listener
     void valueTreeParentChanged (juce::ValueTree&) override {}
 
     ClipTrack& ct;
-    juce::ValueTree& state;
+    juce::ValueTree state;
 
     juce::ReferenceCountedArray<CollectionClip> collectionClips;
 
@@ -375,7 +370,7 @@ WaveAudioClip::Ptr ClipTrack::insertWaveClip (const juce::String& name, const ju
     return engine::insertWaveClip (*this, name, sourceFile, position, deleteExistingClips ? DeleteExistingClips::yes : DeleteExistingClips::no);
 }
 
-WaveAudioClip::Ptr ClipTrack::insertWaveClip (const juce::String& name, ProjectItemID sourceID,
+WaveAudioClip::Ptr ClipTrack::insertWaveClip (const juce::String& name, ProjectItemRef sourceID,
                                               ClipPosition position, bool deleteExistingClips)
 {
     return engine::insertWaveClip (*this, name, sourceID, position, deleteExistingClips ? DeleteExistingClips::yes : DeleteExistingClips::no);
@@ -402,9 +397,9 @@ MidiClip::Ptr ClipTrack::insertMIDIClip (TimeRange position, SelectionManager* s
     return insertMIDIClip (TrackItem::getSuggestedNameForNewItem (TrackItem::Type::midi), position, sm);
 }
 
-EditClip::Ptr ClipTrack::insertEditClip (TimeRange position, ProjectItemID sourceID)
+EditClip::Ptr ClipTrack::insertEditClip (TimeRange position, ProjectItemRef sourceRef)
 {
-    return engine::insertEditClip (*this, position, sourceID);
+    return engine::insertEditClip (*this, position, sourceRef);
 }
 
 void ClipTrack::deleteRegion (TimeRange range, SelectionManager* sm)
@@ -490,14 +485,14 @@ void ClipTrack::clipCreated (Clip& c)
 void ClipTrack::clipAddedOrRemoved()
 {
     changed();
-    setFrozen (false, Track::groupFreeze);
+    unfreeze (Track::groupFreeze);
     trackItemsDirty = true;
 }
 
 void ClipTrack::clipOrderChanged()
 {
     changed();
-    setFrozen (false, Track::groupFreeze);
+    unfreeze (Track::groupFreeze);
     trackItemsDirty = true;
 }
 
@@ -535,12 +530,11 @@ void ClipTrack::splitAt (TimePosition time)
     engine::split (*this, time);
 }
 
-void ClipTrack::insertSpaceIntoTrack (TimePosition time, TimeDuration amountOfSpace)
+void ClipTrack::insertSpace (TimePosition time, TimeDuration length)
 {
-    CRASH_TRACER
-    Track::insertSpaceIntoTrack (time, amountOfSpace);
+    splitAt (time);
 
-    // make a copied list first, as they'll get moved out-of-order..
+    // Build a copied list first, as clips get moved out-of-order
     Clip::Array clipsToDo;
     const auto& clips = getClips();
 
@@ -556,7 +550,7 @@ void ClipTrack::insertSpaceIntoTrack (TimePosition time, TimeDuration amountOfSp
 
     for (int i = clipsToDo.size(); --i >= 0;)
         if (auto c = clipsToDo.getUnchecked (i).get())
-            c->setStart (c->getPosition().getStart() + amountOfSpace, false, true);
+            c->setStart (c->getPosition().getStart() + length, false, true);
 }
 
 juce::Array<TimePosition> ClipTrack::findAllTimesOfInterest()
@@ -643,4 +637,4 @@ bool ClipTrack::areAnyClipsUsingFile (const AudioFile& af)
     return false;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

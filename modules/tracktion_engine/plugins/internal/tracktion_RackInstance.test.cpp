@@ -81,6 +81,539 @@ TEST_SUITE("tracktion_engine")
                     == doctest::Approx (0.0f));
         }
     }
+
+    TEST_CASE ("Rack instance: default stereo channel mappings")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        CHECK (rackInstance->getNumChannelMappings() == 2);
+        CHECK (rackInstance->getInputMapping (0) == 1);
+        CHECK (rackInstance->getInputMapping (1) == 2);
+        CHECK (rackInstance->getOutputMapping (0) == 1);
+        CHECK (rackInstance->getOutputMapping (1) == 2);
+        CHECK (rackInstance->getInputGainParam (0) != nullptr);
+        CHECK (rackInstance->getInputGainParam (1) != nullptr);
+        CHECK (rackInstance->getOutputGainParam (0) != nullptr);
+        CHECK (rackInstance->getOutputGainParam (1) != nullptr);
+    }
+
+    TEST_CASE ("Rack instance: set and get mappings")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        rackInstance->setInputMapping (0, 3);
+        rackInstance->setOutputMapping (1, 4);
+
+        CHECK (rackInstance->getInputMapping (0) == 3);
+        CHECK (rackInstance->getOutputMapping (1) == 4);
+
+        // Disconnect a channel
+        rackInstance->setInputMapping (1, -1);
+        CHECK (rackInstance->getInputMapping (1) == -1);
+    }
+
+    TEST_CASE ("Rack instance: add and remove channel mappings")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+
+        // Add extra rack I/O pins
+        rackType->addInput (-1, "Input 3");
+        rackType->addInput (-1, "Input 4");
+        rackType->addOutput (-1, "Output 3");
+        rackType->addOutput (-1, "Output 4");
+
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        CHECK (rackInstance->getNumChannelMappings() == 2);
+
+        // Add channels
+        rackInstance->addChannelMapping();
+        CHECK (rackInstance->getNumChannelMappings() == 3);
+        CHECK (rackInstance->getInputMapping (2) == -1);  // new channel defaults to disconnected
+        CHECK (rackInstance->getOutputMapping (2) == -1);
+        CHECK (rackInstance->getInputGainParam (2) != nullptr);
+        CHECK (rackInstance->getOutputGainParam (2) != nullptr);
+
+        rackInstance->addChannelMapping();
+        CHECK (rackInstance->getNumChannelMappings() == 4);
+
+        // Set mappings on new channels
+        rackInstance->setInputMapping (2, 3);
+        rackInstance->setInputMapping (3, 4);
+        rackInstance->setOutputMapping (2, 3);
+        rackInstance->setOutputMapping (3, 4);
+
+        CHECK (rackInstance->getInputMapping (2) == 3);
+        CHECK (rackInstance->getInputMapping (3) == 4);
+        CHECK (rackInstance->getOutputMapping (2) == 3);
+        CHECK (rackInstance->getOutputMapping (3) == 4);
+
+        // Remove last channel
+        rackInstance->removeLastChannelMapping();
+        CHECK (rackInstance->getNumChannelMappings() == 3);
+
+        // Can't remove below 1 channel
+        rackInstance->removeLastChannelMapping();
+        rackInstance->removeLastChannelMapping();
+        CHECK (rackInstance->getNumChannelMappings() == 1);
+        rackInstance->removeLastChannelMapping();
+        CHECK (rackInstance->getNumChannelMappings() == 1);
+    }
+
+    TEST_CASE ("Rack instance: getNumOutputChannelsGivenInputs passthrough")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        // Default: numOutputChannels == 2 (from default stereo mappings)
+        CHECK (rackInstance->getNumOutputChannelsGivenInputs (2) == 2);
+        CHECK (rackInstance->getNumOutputChannelsGivenInputs (4) == 4);
+        CHECK (rackInstance->getNumOutputChannelsGivenInputs (8) == 8);
+
+        // With numOutputChannels = 4, output should be at least 4
+        rackInstance->setNumOutputChannels (4);
+        CHECK (rackInstance->getNumOutputChannelsGivenInputs (2) == 4);
+        CHECK (rackInstance->getNumOutputChannelsGivenInputs (4) == 4);
+        CHECK (rackInstance->getNumOutputChannelsGivenInputs (8) == 8);
+    }
+
+    TEST_CASE ("Rack instance: separate input/output channel counts")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        // Default: both match CHANNELMAP count (2)
+        CHECK (rackInstance->getNumInputChannels() == 2);
+        CHECK (rackInstance->getNumOutputChannels() == 2);
+        CHECK (rackInstance->getNumChannelMappings() == 2);
+
+        // Set output channels to 3
+        rackInstance->setNumOutputChannels (3);
+        CHECK (rackInstance->getNumOutputChannels() == 3);
+        CHECK (rackInstance->getNumInputChannels() == 2);
+        CHECK (rackInstance->getNumChannelMappings() >= 3);
+        CHECK (rackInstance->getNumOutputChannelsGivenInputs (2) == 3);
+
+        // Set input channels to 4 — CHANNELMAP should grow
+        rackInstance->setNumInputChannels (4);
+        CHECK (rackInstance->getNumInputChannels() == 4);
+        CHECK (rackInstance->getNumChannelMappings() >= 4);
+
+        // Minimum is 1
+        rackInstance->setNumInputChannels (0);
+        CHECK (rackInstance->getNumInputChannels() == 1);
+        rackInstance->setNumOutputChannels (-5);
+        CHECK (rackInstance->getNumOutputChannels() == 1);
+    }
+
+    TEST_CASE ("Rack instance: linked input/output levels")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        rackInstance->addChannelMapping();
+        rackInstance->addChannelMapping();
+
+        // Test linked inputs
+        rackInstance->linkInputs = true;
+        rackInstance->setInputLevel (0, -6.0f);
+
+        CHECK (rackInstance->getInputGainParam (0)->getCurrentValue() == doctest::Approx (-6.0f));
+        CHECK (rackInstance->getInputGainParam (1)->getCurrentValue() == doctest::Approx (-6.0f));
+        CHECK (rackInstance->getInputGainParam (2)->getCurrentValue() == doctest::Approx (-6.0f));
+        CHECK (rackInstance->getInputGainParam (3)->getCurrentValue() == doctest::Approx (-6.0f));
+
+        // Unlinked
+        rackInstance->linkInputs = false;
+        rackInstance->setInputLevel (1, -12.0f);
+
+        CHECK (rackInstance->getInputGainParam (0)->getCurrentValue() == doctest::Approx (-6.0f));
+        CHECK (rackInstance->getInputGainParam (1)->getCurrentValue() == doctest::Approx (-12.0f));
+        CHECK (rackInstance->getInputGainParam (2)->getCurrentValue() == doctest::Approx (-6.0f));
+    }
+
+    TEST_CASE ("Rack instance: legacy stereo format migration")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        // Create a rack type
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+
+        // Create a normal RackInstance, then modify its state to simulate legacy format
+        auto legacyState = RackInstance::create (*rackType);
+        legacyState.setProperty (IDs::leftTo, 1, nullptr);
+        legacyState.setProperty (IDs::rightTo, 2, nullptr);
+        legacyState.setProperty (IDs::leftFrom, 2, nullptr);
+        legacyState.setProperty (IDs::rightFrom, 1, nullptr);
+        legacyState.setProperty (IDs::leftInDb, -3.0f, nullptr);
+        legacyState.setProperty (IDs::rightInDb, -6.0f, nullptr);
+        legacyState.setProperty (IDs::leftOutDb, -1.0f, nullptr);
+        legacyState.setProperty (IDs::rightOutDb, -2.0f, nullptr);
+
+        auto plugin = track->pluginList.insertPlugin (legacyState, 0);
+        auto rackInstance = dynamic_cast<RackInstance*> (plugin.get());
+        REQUIRE (rackInstance != nullptr);
+
+        // Verify migration happened correctly
+        CHECK (rackInstance->getNumChannelMappings() == 2);
+        CHECK (rackInstance->getInputMapping (0) == 1);
+        CHECK (rackInstance->getInputMapping (1) == 2);
+        CHECK (rackInstance->getOutputMapping (0) == 2);
+        CHECK (rackInstance->getOutputMapping (1) == 1);
+
+        // Check gain values were migrated
+        CHECK (rackInstance->getInputGainParam (0)->getCurrentValue() == doctest::Approx (-3.0f));
+        CHECK (rackInstance->getInputGainParam (1)->getCurrentValue() == doctest::Approx (-6.0f));
+        CHECK (rackInstance->getOutputGainParam (0)->getCurrentValue() == doctest::Approx (-1.0f));
+        CHECK (rackInstance->getOutputGainParam (1)->getCurrentValue() == doctest::Approx (-2.0f));
+
+        // Verify old properties were removed
+        CHECK (! rackInstance->state.hasProperty (IDs::leftTo));
+        CHECK (! rackInstance->state.hasProperty (IDs::rightTo));
+        CHECK (! rackInstance->state.hasProperty (IDs::leftFrom));
+        CHECK (! rackInstance->state.hasProperty (IDs::rightFrom));
+    }
+
+    TEST_CASE ("Rack instance: 4-channel audio routing")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        auto fileLength = 2_td;
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, fileLength.inSeconds(), 2, 220.0f);
+
+        insertWaveClip (*track, {}, sinFile->getFile(), { .time = { 0_tp, fileLength } },
+                        DeleteExistingClips::no);
+
+        // Create rack with a volume plugin
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        Plugin::Array plugins;
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+
+        // Add extra I/O pins
+        rackType->addInput (-1, "Input 3");
+        rackType->addInput (-1, "Input 4");
+        rackType->addOutput (-1, "Output 3");
+        rackType->addOutput (-1, "Output 4");
+
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        // Add 2 more channel mappings for 4-channel
+        rackInstance->addChannelMapping();
+        rackInstance->addChannelMapping();
+
+        CHECK (rackInstance->getNumChannelMappings() == 4);
+
+        // Map all 4 channels
+        rackInstance->setInputMapping (2, 3);
+        rackInstance->setInputMapping (3, 4);
+        rackInstance->setOutputMapping (2, 3);
+        rackInstance->setOutputMapping (3, 4);
+
+        // Verify it renders without crashing
+        auto render = test_utilities::renderToAudioBuffer (*edit);
+        CHECK (render.buffer.getNumSamples() > 0);
+
+        // First two channels should have audio (from the stereo sin file)
+        CHECK (test_utilities::getRMSLevel (render, { 0_tp, fileLength }, 0) > 0.0f);
+        CHECK (test_utilities::getRMSLevel (render, { 0_tp, fileLength }, 1) > 0.0f);
+    }
+
+    TEST_CASE ("Rack instance: rackMacro moveAutomation")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto um = &edit->getUndoManager();
+        auto track = getAudioTracks (*edit)[0];
+
+        // Create a rack with a VolumeAndPan plugin
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        Plugin::Array plugins;
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+
+        // Add a macro parameter to the rack type
+        auto macro = rackType->getMacroParameterListForWriting().createMacroParameter();
+        REQUIRE (macro != nullptr);
+
+        // Add automation points to the macro curve in the range 1s-3s
+        auto& macroCurve = macro->getCurve();
+        macroCurve.addPoint (1_tp, 0.2f, 0.0, um);
+        macroCurve.addPoint (2_tp, 0.8f, 0.0, um);
+        macroCurve.addPoint (3_tp, 0.4f, 0.0, um);
+        CHECK (macroCurve.getNumPoints() == 3);
+
+        // Insert a RackInstance on the track
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+        REQUIRE (rackInstance != nullptr);
+
+        // Build a TrackAutomationSection covering the 1s-3s range
+        TrackAutomationSection section;
+        section.position = { 1_tp, 3_tp };
+        section.src = track;
+        section.dst = track;
+
+        juce::Array<TrackAutomationSection> sections;
+        sections.add (section);
+
+        // Move the automation by +2s
+        moveAutomation (sections, 2_td, false);
+
+        // The macro automation points should now be in 3s-5s range
+        CHECK (macroCurve.getNumPoints() >= 2);
+
+        bool foundPointNear3s = false;
+        bool foundPointNear4s = false;
+        bool foundPointNear5s = false;
+
+        for (int i = 0; i < macroCurve.getNumPoints(); ++i)
+        {
+            auto t = macroCurve.getPointTime (i);
+
+            if (std::abs ((t - 3_tp).inSeconds()) < 0.01)
+                foundPointNear3s = true;
+
+            if (std::abs ((t - 4_tp).inSeconds()) < 0.01)
+                foundPointNear4s = true;
+
+            if (std::abs ((t - 5_tp).inSeconds()) < 0.01)
+                foundPointNear5s = true;
+        }
+
+        CHECK (foundPointNear3s);
+        CHECK (foundPointNear4s);
+        CHECK (foundPointNear5s);
+    }
+
+    TEST_CASE ("PluginNode: maxNumChannels caps channel count")
+    {
+        // maxNumChannels is a cap, not a minimum. When input reports 0 channels,
+        // the output should still be 0 — maxNumChannels only limits, never inflates.
+        // Use LevelMeter here because it has an empty input channel configuration
+        // (plugins that declare a minimum input, like VolumeAndPan, will floor-elevate
+        // the 0-channel input to their declared min — that's a separate code path).
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+
+        auto plugin = edit->getPluginCache().getOrCreatePluginFor (LevelMeterPlugin::create());
+
+        graph::PlayHead playHead;
+        PlayHeadState playHeadState (playHead);
+        ProcessState processState (playHeadState);
+
+        // Input node with 0 channels, maxNumChannels = 2 (cap)
+        auto pluginNode = tracktion::graph::makeNode<PluginNode> (
+            tracktion::graph::makeNode<tracktion::graph::SilentNode> (0),
+            plugin,
+            44100.0, 512,
+            nullptr, processState,
+            false, false,
+            2);  // maxNumChannels = 2
+
+        auto props = pluginNode->getNodeProperties();
+        CHECK (props.numberOfChannels == 0);
+    }
+
+    TEST_CASE ("Rack instance: setInputMappingByName and setOutputMappingByName")
+    {
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        Plugin::Array plugins;
+        VolumeAndPanPlugin::Ptr volPan (dynamic_cast<VolumeAndPanPlugin*> (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()).get()));
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+
+        // Disconnect via name
+        rackInstance->setInputMappingByName (0, rackInstance->getNoPinName());
+        CHECK (rackInstance->getInputMapping (0) == -1);
+
+        // Reconnect via name - getInputChoices(false) gives names without number prefix
+        auto inputChoices = rackInstance->getInputChoices (false);
+
+        if (inputChoices.size() > 1)
+        {
+            rackInstance->setInputMappingByName (0, inputChoices[1]);
+            CHECK (rackInstance->getInputMapping (0) == 1);
+        }
+    }
+
+    TEST_CASE ("Rack instance: stereo instance of a 64-output rack")
+    {
+        // Wrapping a multi-out instrument gives the rack one output per plugin output,
+        // but a default instance only maps the first two back on to the track
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 1.0, 2, 220.0f);
+        insertWaveClip (*track, {}, sinFile->getFile(), { .time = { 0_tp, 1_tp } }, DeleteExistingClips::no);
+
+        auto volPan = edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create());
+        Plugin::Array plugins;
+        plugins.add (volPan);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+
+        while (rackType->getOutputNames().size() < 65) // 64 audio outputs + MIDI
+        {
+            const auto pin = rackType->getOutputNames().size();
+            rackType->addOutput (-1, "Output " + juce::String (pin));
+            rackType->addConnection (volPan->itemID, 1 + (pin - 1) % 2, {}, pin);
+        }
+
+        auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+        REQUIRE (rackInstance != nullptr);
+        CHECK_EQ (rackInstance->getNumOutputChannels(), 2);
+
+        auto render = test_utilities::renderToAudioBuffer (*edit);
+        REQUIRE_GE (render.buffer.getNumChannels(), 2);
+        CHECK_EQ (test_utilities::getRMSLevel (render, { 0_tp, 1_tp }, 0), doctest::Approx (0.707f).epsilon (0.02));
+        CHECK_EQ (test_utilities::getRMSLevel (render, { 0_tp, 1_tp }, 1), doctest::Approx (0.707f).epsilon (0.02));
+
+        engine.getAudioFileManager().releaseAllFiles();
+        edit->getTempDirectory (false).deleteRecursively();
+    }
+
+    TEST_CASE ("Rack instance: every instance of a rack type returns the rack's output")
+    {
+        // Instances of the same rack type all send into, and return from, one shared rack
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine, 2);
+        auto tracks = getAudioTracks (*edit);
+
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 1.0, 2, 220.0f);
+
+        for (auto t : tracks)
+            insertWaveClip (*t, {}, sinFile->getFile(), { .time = { 0_tp, 1_tp } }, DeleteExistingClips::no);
+
+        Plugin::Array plugins;
+        plugins.add (edit->getPluginCache().getOrCreatePluginFor (VolumeAndPanPlugin::create()));
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+
+        auto instance1 = dynamic_cast<RackInstance*> (tracks[0]->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+        auto instance2 = dynamic_cast<RackInstance*> (tracks[1]->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+        REQUIRE (instance1 != nullptr);
+        REQUIRE (instance2 != nullptr);
+
+        // N.B. measureStatistics doesn't clip, unlike rendering to a fixed-point file
+        auto getPeak = [&] { return Renderer::measureStatistics ({}, *edit, { 0_tp, 1_tp }, toBitSet (getAllTracks (*edit)), 512).peak; };
+
+        // The rack sums both tracks (2.0) and each instance returns that sum
+        CHECK_EQ (getPeak(), doctest::Approx (4.0f).epsilon (0.01));
+
+        // With track 2's instance fully dry it returns its own input, and still sends to the rack
+        instance2->wetGain->setParameter (0.0f, juce::dontSendNotification);
+        instance2->dryGain->setParameter (1.0f, juce::dontSendNotification);
+        CHECK_EQ (getPeak(), doctest::Approx (3.0f).epsilon (0.01));
+
+        engine.getAudioFileManager().releaseAllFiles();
+        edit->getTempDirectory (false).deleteRecursively();
+    }
+
+    TEST_CASE ("Rack instance: latency inside a rack is compensated")
+    {
+        // A plugin's latency inside a rack reaches the track through the rack's return,
+        // so the other tracks have to be delayed to match
+        auto& engine = *tracktion::engine::Engine::getEngines()[0];
+        engine.getPluginManager().createBuiltInType<LatencyPlugin>();
+
+        auto edit = test_utilities::createTestEdit (engine, 2);
+        auto tracks = getAudioTracks (*edit);
+
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 1.0, 2, 220.0f);
+
+        for (auto t : tracks)
+            insertWaveClip (*t, {}, sinFile->getFile(), { .time = { 0_tp, 1_tp } }, DeleteExistingClips::no);
+
+        auto latency = edit->getPluginCache().createNewPlugin (LatencyPlugin::xmlTypeName, {});
+        REQUIRE (latency != nullptr);
+
+        // Half a cycle of 220Hz, so the two tracks would cancel out if the latency wasn't compensated
+        dynamic_cast<LatencyPlugin&> (*latency).latencyTimeSeconds = 0.5f / 220.0f;
+
+        SUBCASE ("Directly on the track")
+        {
+            tracks[0]->pluginList.insertPlugin (latency, 0, nullptr);
+        }
+
+        SUBCASE ("Inside a rack")
+        {
+            Plugin::Array plugins;
+            plugins.add (latency);
+            auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+            REQUIRE (tracks[0]->pluginList.insertPlugin (RackInstance::create (*rackType), 0) != nullptr);
+        }
+
+        // N.B. measureStatistics doesn't clip, unlike rendering to a fixed-point file
+        const auto stats = Renderer::measureStatistics ({}, *edit, { 0.1_tp, 0.9_tp }, toBitSet (getAllTracks (*edit)), 512);
+        CHECK_EQ (stats.peak, doctest::Approx (2.0f).epsilon (0.02));
+
+        // Rendering to a file takes a different path, so check that too, turning the tracks
+        // down to avoid clipping the fixed-point file
+        for (auto t : tracks)
+            t->getVolumePlugin()->setVolumeDb (-12.0f);
+
+        auto render = test_utilities::renderToAudioBuffer (*edit);
+        const auto startSample = (int) toSamples (0.1_td, render.sampleRate);
+        const auto numSamples = (int) toSamples (0.8_td, render.sampleRate);
+        CHECK_EQ (render.buffer.getMagnitude (0, startSample, numSamples), doctest::Approx (2.0f * dbToGain (-12.0f)).epsilon (0.02));
+
+        engine.getAudioFileManager().releaseAllFiles();
+        edit->getTempDirectory (false).deleteRecursively();
+    }
 }
 #endif
 

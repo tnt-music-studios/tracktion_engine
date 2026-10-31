@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static inline HashCode getAudioFileHash (const juce::File& file) noexcept
 {
@@ -161,6 +160,28 @@ AudioFileWriter::AudioFileWriter (const AudioFile& f,
         writer.reset (AudioFileUtils::createWriterFor (formatToUse, file.getFile(), sampleRate,
                                                        (unsigned int) numChannels, bitsPerSample,
                                                        metadata, quality));
+    }
+}
+
+AudioFileWriter::AudioFileWriter (const AudioFile& f,
+                                  juce::AudioFormat* formatToUse,
+                                  int numChannels,
+                                  double sampleRate,
+                                  int bitsPerSample,
+                                  const juce::StringPairArray& metadata,
+                                  int quality,
+                                  const juce::AudioChannelSet& channelLayout)
+    : file (f), samplesUntilFlush (numSamplesPerFlush)
+{
+    CRASH_TRACER
+    f.engine->getAudioFileManager().releaseFile (file);
+
+    if (file.getFile().getParentDirectory().createDirectory())
+    {
+        const juce::ScopedLock sl (writerLock);
+        writer.reset (AudioFileUtils::createWriterFor (formatToUse, file.getFile(), sampleRate,
+                                                       (unsigned int) numChannels, bitsPerSample,
+                                                       metadata, quality, channelLayout));
     }
 }
 
@@ -361,6 +382,7 @@ AudioFileInfo::AudioFileInfo (const AudioFile& file, juce::AudioFormatReader* re
         needsCachedProxy = dynamic_cast<juce::WavAudioFormat*> (format) == nullptr
                               && dynamic_cast<juce::AiffAudioFormat*> (format) == nullptr
                               && dynamic_cast<FloatAudioFormat*> (format) == nullptr;
+        channelLayout   = reader->getChannelLayout();
         metadata = reader->metadataValues;
     }
     else
@@ -470,6 +492,64 @@ private:
 };
 
 //==============================================================================
+struct MemoryBufferReader  : public AudioFormatReaderWithTimeout
+{
+    MemoryBufferReader (choc::buffer::InterleavedView<const float> buf, double sr)
+        : sourceBuffer (buf)
+    {
+        sampleRate            = sr;
+        numChannels           = static_cast<unsigned int> (buf.getNumChannels());
+        lengthInSamples       = static_cast<juce::int64> (buf.getNumFrames());
+        usesFloatingPointData = true;
+        bitsPerSample         = 32;
+    }
+
+    void setReadTimeout (int) override {}
+
+    bool readSamples (int* const* destSamples, int numDestChannels,
+                      int startOffsetInDestBuffer,
+                      juce::int64 startSampleInFile,
+                      int numSamples) override
+    {
+        using choc::buffer::FrameCount;
+        using choc::buffer::ChannelCount;
+
+        // Frames before the start or after the end of the buffer are silent
+        const auto numSourceFrames = static_cast<juce::int64> (sourceBuffer.getNumFrames());
+        const auto srcStart = std::clamp (startSampleInFile, juce::int64 (0), numSourceFrames);
+        const auto srcEnd = std::clamp (startSampleInFile + numSamples, juce::int64 (0), numSourceFrames);
+        const auto numSourceChannels = static_cast<int> (sourceBuffer.getNumChannels());
+
+        // usesFloatingPointData = true, so int** is really float**
+        auto destChannels = reinterpret_cast<float* const*> (destSamples);
+
+        for (int chan = 0; chan < numDestChannels; ++chan)
+        {
+            // Callers such as AudioFormatReader::read pass null for channels they don't want
+            auto destChannel = destChannels[chan];
+
+            if (destChannel == nullptr)
+                continue;
+
+            auto dest = choc::buffer::createMonoView (destChannel + startOffsetInDestBuffer,
+                                                      static_cast<FrameCount> (numSamples));
+            dest.clear();
+
+            if (chan < numSourceChannels && srcEnd > srcStart)
+                choc::buffer::copy (dest.getFrameRange ({ static_cast<FrameCount> (srcStart - startSampleInFile),
+                                                          static_cast<FrameCount> (srcEnd - startSampleInFile) }),
+                                    sourceBuffer.getChannel (static_cast<ChannelCount> (chan))
+                                                .getFrameRange ({ static_cast<FrameCount> (srcStart),
+                                                                  static_cast<FrameCount> (srcEnd) }));
+        }
+
+        return true;
+    }
+
+    choc::buffer::InterleavedView<const float> sourceBuffer;
+};
+
+//==============================================================================
 struct AudioFileManager::KnownFile
 {
     KnownFile (const AudioFile& f)
@@ -477,8 +557,15 @@ struct AudioFileManager::KnownFile
     {
     }
 
+    KnownFile (const AudioFile& f, AudioFileInfo i,
+               choc::buffer::InterleavedView<const float> buf)
+        : file (f), info (std::move (i)), memoryBuffer (buf)
+    {
+    }
+
     AudioFile file;
     AudioFileInfo info;
+    std::optional<choc::buffer::InterleavedView<const float>> memoryBuffer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KnownFile)
 };
@@ -567,7 +654,7 @@ double SmartThumbnail::getProportionComplete() const noexcept
     if (auto sampleRate = file.getSampleRate(); sampleRate > 0)
     {
         const auto totalSamples = toSamples (TimePosition::fromSeconds (getTotalLength()), sampleRate);
-        return juce::jlimit (0.0, 1.0, getNumSamplesFinished() / (double) std::max ((SampleCount) 1, totalSamples));
+        return juce::jlimit (0.0, 1.0, double (getNumSamplesFinished()) / double (std::max ((SampleCount) 1, totalSamples)));
     }
 
     return 0.0;
@@ -816,7 +903,7 @@ void AudioFileManager::removeFile (HashCode hash)
         knownFiles.erase (f);
 }
 
-AudioFile AudioFileManager::getAudioFile (ProjectItemID sourceID)
+AudioFile AudioFileManager::getAudioFile (ProjectItemRef sourceID)
 {
     return AudioFile (engine, engine.getProjectManager().findSourceFile (sourceID));
 }
@@ -827,8 +914,50 @@ AudioFileInfo AudioFileManager::getInfo (const AudioFile& file)
     return findOrCreateKnown (file).info;
 }
 
+void AudioFileManager::registerMemoryBuffer (const std::string& filename,
+                                             choc::buffer::InterleavedView<const float> buffer,
+                                             double sampleRate)
+{
+    AudioFile af (engine, juce::File (filename));
+
+    AudioFileInfo info (engine);
+    info.wasParsedOk      = true;
+    info.hashCode         = af.getHash();
+    info.sampleRate       = sampleRate;
+    info.lengthInSamples  = static_cast<SampleCount> (buffer.getNumFrames());
+    info.numChannels      = static_cast<int> (buffer.getNumChannels());
+    info.bitsPerSample    = 32;
+    info.isFloatingPoint  = true;
+    info.needsCachedProxy = false;
+
+    const juce::ScopedLock sl (knownFilesLock);
+    knownFiles[af.getHash()] = std::make_unique<KnownFile> (af, std::move (info), buffer);
+}
+
+void AudioFileManager::unregisterMemoryBuffer (const std::string& filename)
+{
+    AudioFile af (engine, juce::File (filename));
+    removeFile (af.getHash());
+}
+
+std::unique_ptr<AudioFormatReaderWithTimeout> AudioFileManager::createMemoryReader (const AudioFile& file) const
+{
+    const juce::ScopedLock sl (knownFilesLock);
+
+    auto it = knownFiles.find (file.getHash());
+
+    if (it != knownFiles.end() && it->second->memoryBuffer.has_value())
+        return std::make_unique<MemoryBufferReader> (*(it->second->memoryBuffer),
+                                                     it->second->info.sampleRate);
+
+    return {};
+}
+
 bool AudioFileManager::checkFileTime (KnownFile& f)
 {
+    if (f.memoryBuffer.has_value())
+        return false;
+
     if (! f.info.wasParsedOk
         || f.info.fileModificationTime != f.file.getFile().getLastModificationTime())
     {
@@ -976,6 +1105,10 @@ void AudioFileManager::handleAsyncUpdate()
 
     {
         const juce::ScopedLock sl (knownFilesLock);
+
+        if (filesToCheck.isEmpty())
+            return;
+
         fileToCheck = filesToCheck.getUnchecked (filesToCheck.size() - 1);
         filesToCheck.removeLast();
 
@@ -987,4 +1120,4 @@ void AudioFileManager::handleAsyncUpdate()
         checkFileForChanges (fileToCheck);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

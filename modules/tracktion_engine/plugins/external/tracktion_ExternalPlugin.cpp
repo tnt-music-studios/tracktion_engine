@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static juce::String getDeprecatedPluginDescSuffix (const juce::PluginDescription& d)
 {
@@ -225,15 +224,21 @@ struct AsyncPluginDeleter  : private juce::Timer,
         }
     }
 
-    bool releaseNextDanglingPlugin()
+    /** Sets a callback to be invoked when all queued plugins have been deleted.
+        If the queue is already empty, calls the callback immediately. */
+    void callOnceEmpty (std::function<void()> cb)
     {
-        if (plugins.size() > 0)
-        {
-            timerCallback();
-            return true;
-        }
+        onEmptyCallback = std::move (cb);
 
-        return false;
+        if (plugins.isEmpty() && onEmptyCallback)
+            onEmptyCallback();
+    }
+
+    /** Deletes all the queued plugins now, rather than one per timer callback. */
+    void deleteQueuedPlugins()
+    {
+        while (! plugins.isEmpty() && ! recursive)
+            timerCallback();
     }
 
     void timerCallback() override
@@ -241,6 +246,10 @@ struct AsyncPluginDeleter  : private juce::Timer,
         if (plugins.isEmpty())
         {
             stopTimer();
+
+            if (onEmptyCallback)
+                onEmptyCallback();
+
             return;
         }
 
@@ -260,6 +269,7 @@ struct AsyncPluginDeleter  : private juce::Timer,
 private:
     juce::OwnedArray<juce::AudioPluginInstance> plugins;
     bool recursive = false;
+    std::function<void()> onEmptyCallback;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AsyncPluginDeleter)
 };
@@ -268,25 +278,28 @@ JUCE_IMPLEMENT_SINGLETON (AsyncPluginDeleter)
 
 void cleanUpDanglingPlugins()
 {
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    if (auto d = AsyncPluginDeleter::getInstanceWithoutCreating())
-    {
-        for (int count = 400; --count > 0 && d->releaseNextDanglingPlugin();)
-        {
-            juce::Component modal;
-            modal.enterModalState (false);
-
-            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
-        }
-    }
-   #endif
-
     AsyncPluginDeleter::deleteInstance();
+}
+
+void deleteQueuedPlugins()
+{
+    TRACKTION_ASSERT_MESSAGE_THREAD
+
+    if (auto d = AsyncPluginDeleter::getInstanceWithoutCreating())
+        d->deleteQueuedPlugins();
+}
+
+void waitForPluginDeletion (std::function<void()> onComplete)
+{
+    if (auto d = AsyncPluginDeleter::getInstanceWithoutCreating())
+        d->callOnceEmpty (std::move (onComplete));
+    else if (onComplete)
+        onComplete();
 }
 
 //==============================================================================
 #if JUCE_PLUGINHOST_VST
-struct ExtraVSTCallbacks  : public juce::VSTPluginFormat::ExtraFunctions
+struct ExtraVSTCallbacks  : public juce::AudioPluginExtensions::VSTClient::ExtraFunctions
 {
     ExtraVSTCallbacks (Edit& ed) : edit (ed) {}
 
@@ -424,16 +437,21 @@ namespace
                     continue;
 
                 const int busIdx = v[IDs::index];
-                maxNumBuses = std::max (maxNumBuses, busIdx + 1);
 
-                // The number of buses on busesLayout may not be in sync with the plugin after adding buses
-                // because adding an input bus could also add an output bus
                 for (int actualIdx = plugin.getBusCount (isInput) - 1; actualIdx < busIdx; ++actualIdx)
                     if (! plugin.addBus (isInput))
                         break;
 
+                // If the plugin couldn't add enough buses, skip this entry
+                if (busIdx >= plugin.getBusCount (isInput))
+                    continue;
+
+                maxNumBuses = std::max (maxNumBuses, busIdx + 1);
+
+                // The number of buses in targetBuses may not be in sync with the plugin
+                // because addBus may have been called on the other direction previously
                 for (int actualIdx = targetBuses.size() - 1; actualIdx < busIdx; ++actualIdx)
-                    targetBuses.add (plugin.getChannelLayoutOfBus (isInput, busIdx));
+                    targetBuses.add (plugin.getChannelLayoutOfBus (isInput, actualIdx + 1));
 
                 const auto layout = v[IDs::layout].toString();
 
@@ -443,13 +461,16 @@ namespace
         }
 
         // If the plugin has more buses than specified in the xml, then try to remove them!
-        while (maxNumBuses < targetBuses.size())
-        {
+        while (plugin.getBusCount (isInput) > maxNumBuses)
             if (! plugin.removeBus (isInput))
                 break;
 
+        // Sync targetBuses to match the plugin's actual bus count
+        while (targetBuses.size() > plugin.getBusCount (isInput))
             targetBuses.removeLast();
-        }
+
+        while (targetBuses.size() < plugin.getBusCount (isInput))
+            targetBuses.add (plugin.getChannelLayoutOfBus (isInput, targetBuses.size()));
     }
 
     juce::AudioProcessor::BusesLayout readBusesLayout (const juce::var& layout, juce::AudioProcessor& plugin)
@@ -688,7 +709,7 @@ ExternalPlugin::ExternalPlugin (PluginCreationInfo info)  : Plugin (info)
     initialiseFully();
 }
 
-juce::ValueTree ExternalPlugin::create (Engine& e, const juce::PluginDescription& desc)
+juce::ValueTree ExternalPlugin::create (Engine&, const juce::PluginDescription& desc)
 {
     auto v = createValueTree (IDs::PLUGIN,
                               IDs::type, xmlTypeName,
@@ -697,9 +718,6 @@ juce::ValueTree ExternalPlugin::create (Engine& e, const juce::PluginDescription
                               IDs::filename, desc.fileOrIdentifier,
                               IDs::name, desc.name,
                               IDs::manufacturer, desc.manufacturerName);
-
-    if (e.getPluginManager().areGUIsLockedByDefault())
-        v.setProperty (IDs::windowLocked, true, nullptr);
 
     return v;
 }
@@ -734,8 +752,20 @@ void ExternalPlugin::forceFullReinitialise()
     TransportControl::ScopedPlaybackRestarter restarter (edit.getTransport());
     engine.getUIBehaviour().recreatePluginWindowContentAsync (*this);
     edit.getTransport().stop (false, true);
+
+    const bool hadInstance = hasLoadedInstance;
+
     fullyInitialised = false;
     initialiseFully();
+
+    // initialiseFully()/doFullInitialisation() only (re)build the parameter list as
+    // part of *creating* an instance; when the instance already exists that step is
+    // skipped. Refresh the list here so parameters published after creation become
+    // visible — e.g. a Cmajor patch whose endpoints appear once its async JIT build
+    // completes (initialiseFully() leaves the existing instance in place).
+    if (hadInstance)
+        buildParameterList();
+
     changed();
 
     if (isInstancePrepared)
@@ -798,8 +828,20 @@ void ExternalPlugin::buildParameterList()
                 // Just use the index for the ID for now until this has been added to JUCE
                 auto parameterID = juce::String (i);
 
-                if (auto paramWithID = dynamic_cast<juce::AudioProcessorParameterWithID*> (parameter))
+                if (isCmajorPatchPluginFormat (desc))
+                {
+                    // Cmajor patches are new, so no existing automation is keyed on the
+                    // index — use the plugin's own (HostedAudioProcessorParameter) id for
+                    // stability. Don't broaden this to other formats: VST3/AU/LV2 return
+                    // their native ids from getParameterID(), and switching them off the
+                    // historical index id would orphan automation in existing edits.
+                    if (auto hosted = dynamic_cast<juce::HostedAudioProcessorParameter*> (parameter))
+                        parameterID = hosted->getParameterID();
+                }
+                else if (auto paramWithID = dynamic_cast<juce::AudioProcessorParameterWithID*> (parameter))
+                {
                     parameterID = paramWithID->paramID;
+                }
 
                 auto p = new ExternalAutomatableParameter (parameterID, nm, *this, i, { 0.0f, 1.0f });
                 addAutomatableParameter (*p);
@@ -828,8 +870,9 @@ void ExternalPlugin::refreshParameterValues()
             p->valueChangedByPlugin();
 }
 
-static std::unique_ptr<juce::PluginDescription> findMatchingPluginDescription (Engine& engine, const juce::PluginDescription& desc)
+static std::unique_ptr<juce::PluginDescription> findMatchingPluginDescription (Edit& edit, const juce::PluginDescription& desc)
 {
+    auto& engine = edit.engine;
     auto& pm = engine.getPluginManager();
 
     if (desc.uniqueId != 0)
@@ -848,7 +891,7 @@ static std::unique_ptr<juce::PluginDescription> findMatchingPluginDescription (E
             if (d.fileOrIdentifier == desc.fileOrIdentifier)
                 return std::make_unique<juce::PluginDescription> (d);
 
-        return engine.getEngineBehaviour().findDescriptionForFileOrID (desc.fileOrIdentifier);
+        return engine.getEngineBehaviour().findDescriptionForFileOrIDInEdit (edit, desc.fileOrIdentifier);
     }
 
     return {};
@@ -923,7 +966,7 @@ std::unique_ptr<juce::PluginDescription> ExternalPlugin::findMatchingPlugin() co
             return p;
     }
 
-    if (auto p = findMatchingPluginDescription (engine, desc))
+    if (auto p = findMatchingPluginDescription (edit, desc))
         return p;
 
     if (auto p = findDescForName (engine, desc.name, getPreferredFormat (desc)))
@@ -1011,6 +1054,15 @@ ExternalPlugin::~ExternalPlugin()
 
     deletePluginInstance();
 }
+
+#if TRACKTION_ENABLE_ARA
+void ExternalPlugin::setARADocumentBinding (std::unique_ptr<ARAPluginBinding> newBinding)
+{
+    TRACKTION_ASSERT_MESSAGE_THREAD
+    jassert (araBinding == nullptr || newBinding == nullptr);   // an instance must only ever be bound once
+    araBinding = std::move (newBinding);
+}
+#endif
 
 void ExternalPlugin::selectableAboutToBeDeleted()
 {
@@ -1554,7 +1606,33 @@ void ExternalPlugin::processPluginBlock (juce::AudioPluginInstance& pluginInstan
 //==============================================================================
 int ExternalPlugin::getNumOutputChannelsGivenInputs (int)
 {
-    return std::max (1, getNumOutputs());
+    if (auto pi = getAudioPluginInstance())
+        return std::max (1, pi->getMainBusNumOutputChannels());
+
+    return 1;
+}
+
+Plugin::BusLayout ExternalPlugin::getBusses() const
+{
+    BusLayout layout;
+
+    if (auto pi = getAudioPluginInstance())
+    {
+        for (int i = 0, n = pi->getBusCount (true); i < n; ++i)
+            if (auto bus = pi->getBus (true, i))
+                layout.inputs.push_back (ChannelConfiguration::canonical (bus->getNumberOfChannels()));
+
+        for (int i = 0, n = pi->getBusCount (false); i < n; ++i)
+            if (auto bus = pi->getBus (false, i))
+                layout.outputs.push_back (ChannelConfiguration::canonical (bus->getNumberOfChannels()));
+    }
+    else
+    {
+        layout.inputs.push_back (ChannelConfiguration::stereo());
+        layout.outputs.push_back (ChannelConfiguration::stereo());
+    }
+
+    return layout;
 }
 
 void ExternalPlugin::getChannelNames (juce::StringArray* ins,
@@ -1759,7 +1837,10 @@ bool ExternalPlugin::isDisabled()
     return engine.getEngineBehaviour().isPluginDisabled (identiferString);
 }
 
-int ExternalPlugin::getNumInputs() const
+JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
+JUCE_BEGIN_IGNORE_WARNINGS_MSVC (4996)
+
+int ExternalPlugin::getTotalNumInputChannels() const
 {
     if (auto pi = getAudioPluginInstance())
         return pi->getTotalNumInputChannels();
@@ -1767,13 +1848,8 @@ int ExternalPlugin::getNumInputs() const
     return 0;
 }
 
-int ExternalPlugin::getNumOutputs() const
-{
-    if (auto pi = getAudioPluginInstance())
-        return pi->getTotalNumOutputChannels();
-
-    return 0;
-}
+JUCE_END_IGNORE_WARNINGS_GCC_LIKE
+JUCE_END_IGNORE_WARNINGS_MSVC
 
 bool ExternalPlugin::setBusesLayout (juce::AudioProcessor::BusesLayout layout)
 {
@@ -1907,10 +1983,13 @@ void ExternalPlugin::completePluginInstanceCreation (std::unique_ptr<juce::Audio
     auto pi = getAudioPluginInstance();
 
    #if JUCE_PLUGINHOST_VST
-    if (auto xml = juce::VSTPluginFormat::getVSTXML (pi))
-        vstXML.reset (VSTXML::createFor (*xml));
+    if (auto vstClient = pi->getVSTClient())
+    {
+        if (auto xml = vstClient->getVSTXML())
+            vstXML.reset (VSTXML::createFor (*xml));
 
-    juce::VSTPluginFormat::setExtraFunctions (pi, new ExtraVSTCallbacks (edit));
+        vstClient->setExtraFunctions (juce::rawToUniquePtr (new ExtraVSTCallbacks (edit)));
+    }
    #endif
 
     pi->setPlayHead (playhead.get());
@@ -1930,9 +2009,24 @@ void ExternalPlugin::deletePluginInstance()
     isAsyncInitialising = false;
     loadError = {};
 
+   #if TRACKTION_ENABLE_ARA
+    // The ARA bind lives and dies with the wrapped instance: unregister the binding
+    // from its document before the instance goes away
+    araBinding.reset();
+   #endif
+
     if (loadedInstance)
+    {
         if (auto pi = loadedInstance->releaseInstance())
-            AsyncPluginDeleter::getInstance()->deletePlugin (std::move (pi));
+        {
+            // ARA-bound instances must be destroyed before their document controller,
+            // so they can't sit in the async deletion queue
+            if (deleteInstanceSynchronously)
+                pi.reset();
+            else
+                AsyncPluginDeleter::getInstance()->deletePlugin (std::move (pi));
+        }
+    }
 }
 
 //==============================================================================
@@ -2044,9 +2138,9 @@ juce::Array<Exportable::ReferencedItem> ExternalPlugin::getReferencedItems()
     return engine.getEngineBehaviour().getReferencedItems (*this);
 }
 
-void ExternalPlugin::reassignReferencedItem (const ReferencedItem& itm, ProjectItemID newID, double newStartTime)
+void ExternalPlugin::reassignReferencedItem (const ReferencedItem& item, ProjectItemRef newRef, double newStartTime)
 {
-    engine.getEngineBehaviour().reassignReferencedItem (*this, itm, newID, newStartTime);
+    engine.getEngineBehaviour().reassignReferencedItem (*this, item, newRef, newStartTime);
 }
 
 
@@ -2059,7 +2153,7 @@ struct AudioProcessorEditorContentComp  : public Plugin::EditorComponent
         {
             if (auto inst = plugin.getAudioPluginInstance())
             {
-                editor.reset (inst->createEditorIfNeeded());
+                editor.reset (inst->createEditorAndMakeActive());
 
                 if (editor == nullptr)
                     return;
@@ -2079,6 +2173,11 @@ struct AudioProcessorEditorContentComp  : public Plugin::EditorComponent
         // Allowing this for VSTs results in some hard-to-prevent size hysteresis..
         return plugin.isVST3()
                 && plugin.getVendor().containsIgnoreCase ("Celemony");
+    }
+
+    bool isEditorResizable() override
+    {
+        return editor != nullptr && editor->isResizable();
     }
 
     juce::ComponentBoundsConstrainer* getBoundsConstrainer() override
@@ -2176,4 +2275,4 @@ float PluginWetDryAutomatableParam::stringToValue (const juce::String& s)
     return juce::Decibels::decibelsToGain (dbStringToDb (s));
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

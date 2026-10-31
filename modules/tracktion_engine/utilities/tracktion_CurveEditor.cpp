@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 CurveEditorPoint::~CurveEditorPoint()
 {
@@ -208,7 +207,7 @@ void CurveEditor::paint (juce::Graphics& g)
 
                 lastY = p2.y;
 
-                if (p2.x > clipBounds.getRight())
+                if (p2.x > float (clipBounds.getRight()))
                     break;
             }
         }
@@ -217,8 +216,11 @@ void CurveEditor::paint (juce::Graphics& g)
 
         if (auto fillCol = getCurrentFillColour(); ! fillCol.isTransparent() && fillPath())
         {
+            auto range = getParameterRange();
+            auto isBipolar = range.getStart() < 0.0f && range.getEnd() > 0.0f;
+            const auto y = isBipolar ? valueToY (0.0f) : float (getHeight()) + 1.0f;
+
             juce::Path fillPath (curvePath);
-            const auto y = getHeight() + 1.0f;
             fillPath.lineTo ((float) getWidth(), y);
             fillPath.lineTo (startX, y);
             fillPath.closeSubPath();
@@ -253,7 +255,7 @@ void CurveEditor::paint (juce::Graphics& g)
                                       pointRadius * 2);
             r = r.reduced (2);
 
-            if (r.getX() > clipBounds.getRight())
+            if (r.getX() > float (clipBounds.getRight()))
                 break;
 
             const bool isSelected = isPointSelected (i);
@@ -287,7 +289,7 @@ void CurveEditor::paint (juce::Graphics& g)
                                       pointRadius * 2);
             r = r.reduced (2);
 
-            if (r.getX() > clipBounds.getRight())
+            if (r.getX() > float (clipBounds.getRight()))
                 break;
 
             g.setColour (curveColour);
@@ -316,7 +318,7 @@ void CurveEditor::paint (juce::Graphics& g)
                                           pointRadius * 2);
                 r = r.reduced (2);
 
-                if (r.getX() <= clipBounds.getRight())
+                if (r.getX() <= float (clipBounds.getRight()))
                 {
                     g.setColour (getCurrentLineColour());
                     g.fillRect (r);
@@ -331,10 +333,10 @@ void CurveEditor::paint (juce::Graphics& g)
 
 bool CurveEditor::hitTest (int x, int y)
 {
-    auto py1 = valueToY (getValueAt (xToTime (x - 3.0f)));
-    auto py2 = valueToY (getValueAt (xToTime (x + 3.0f)));
+    auto py1 = valueToY (getValueAt (xToTime (float (x) - 3.0f)));
+    auto py2 = valueToY (getValueAt (xToTime (float (x) + 3.0f)));
 
-    if (y > std::min (py1, py2) - 4.0f && y < std::max (py1, py2) + 4.0f)
+    if (float (y) > std::min (py1, py2) - 4.0f && float (y) < std::max (py1, py2) + 4.0f)
         return true;
 
     for (int i = firstIndexOnScreen; i < getNumPoints(); ++i)
@@ -347,8 +349,8 @@ bool CurveEditor::hitTest (int x, int y)
         auto px = timeToX (t);
         auto py = valueToY (getPointValue (i));
 
-        if (std::abs (x - px) < pointRadius
-             && std::abs (y - py) < pointRadius + 2)
+        if (std::abs (float (x) - px) < pointRadius
+             && std::abs (float (y) - py) < pointRadius + 2)
             return true;
     }
 
@@ -445,7 +447,6 @@ void CurveEditor::selectPoint (int pointIdx, bool addToSelection)
 
 void CurveEditor::mouseDrag (const juce::MouseEvent& e)
 {
-    yieldGUIThread();
 
     if (getItem() == nullptr)
         return;
@@ -517,7 +518,7 @@ void CurveEditor::mouseDrag (const juce::MouseEvent& e)
 
         // bend a curve
         auto mult = getPointValue (curveUnderMouse) < getPointValue (curveUnderMouse + 1) ? 1 : -1;
-        auto c = juce::jlimit (-1.0f, 1.0f, mult * e.getDistanceFromDragStartY() / 75.0f + mouseDownCurve);
+        auto c = juce::jlimit (-1.0f, 1.0f, float (mult) * float (e.getDistanceFromDragStartY()) / 75.0f + mouseDownCurve);
         curvePoint (curveUnderMouse, c);
         showBubbleForPointUnderMouse();
     }
@@ -838,7 +839,7 @@ EditPosition CurveEditor::xToTime (double x) const
 
 float CurveEditor::valueToY (float val) const
 {
-    return 1.0f + (1.0f - (val - getParameterRange().getStart()) / getParameterRange().getLength()) * (getHeight() - 2);
+    return 1.0f + (1.0f - (val - getParameterRange().getStart()) / getParameterRange().getLength()) * float (getHeight() - 2);
 }
 
 float CurveEditor::yToValue (double y) const
@@ -928,4 +929,4 @@ CurveEditorPoint* CurveEditor::getSelectedPoint (int idx)
     return {};
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

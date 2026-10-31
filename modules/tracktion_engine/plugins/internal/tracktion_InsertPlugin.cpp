@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static void getPossibleInputDeviceNames (Engine& e,
                                          juce::StringArray& s, juce::StringArray& a,
@@ -31,7 +30,7 @@ static void getPossibleInputDeviceNames (Engine& e,
                 hasAudio.setBit (s.size(), true);
 
             s.add (in->getName());
-            a.add (in->getAlias());
+            a.add (in->getAliasOrName());
         }
     }
 }
@@ -63,7 +62,7 @@ static void getPossibleOutputDeviceNames (Engine& e,
             }
 
             s.add (out->getName());
-            a.add (out->getAlias());
+            a.add (out->getAliasOrName());
         }
     }
 }
@@ -100,7 +99,6 @@ juce::String InsertPlugin::getPluginType()                                   { r
 juce::String InsertPlugin::getShortName (int)                                { return TRANS("Insert"); }
 double InsertPlugin::getLatencySeconds()                                     { return latencySeconds; }
 void InsertPlugin::getChannelNames (juce::StringArray*, juce::StringArray*)  {}
-bool InsertPlugin::takesAudioInput()                                         { return true; }
 bool InsertPlugin::takesMidiInput()                                          { return true; }
 bool InsertPlugin::canBeAddedToClip()                                        { return false; }
 bool InsertPlugin::needsConstantBufferSize()                                 { return true; }
@@ -228,4 +226,4 @@ void InsertPlugin::valueTreePropertyChanged (juce::ValueTree& v, const juce::Ide
     Plugin::valueTreePropertyChanged (v, i);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -43,12 +43,12 @@ TEST_SUITE("tracktion_engine")
 
         {
             sourceEditProjectItem = proj.createNewEdit();
-            sourceEdit->setProjectItemID (sourceEditProjectItem->getID());
+            sourceEdit->setProjectItemRef (sourceEditProjectItem->getProjectItemRef());
 
-            CHECK (EditFileOperations (*sourceEdit).save (false, true, false));
+            CHECK (test_utilities::saveEditSync (*sourceEdit));
             CHECK (sourceEditProjectItem);
             CHECK (sourceEditProjectItem->isEdit());
-            CHECK (sourceEditProjectItem->getID().isValid());
+            CHECK (sourceEditProjectItem->getProjectItemRef().isValid());
             CHECK (sourceEditProjectItem->getSourceFile().existsAsFile());
         }
 
@@ -67,25 +67,32 @@ TEST_SUITE("tracktion_engine")
             tempSourceRender = test_utilities::renderToAudioBuffer (*sourceEdit);
             CHECK (test_utilities::getRMSLevel (tempSourceRender, { 0_tp, 5_tp }, 0)
                     == doctest::Approx (0.707f).epsilon (0.01));
-            CHECK (EditFileOperations (*sourceEdit).save (false, true, false));
+            CHECK (test_utilities::saveEditSync (*sourceEdit));
         }
 
         // Dest Edit
         {
             auto destEditProjectItem = proj.createNewEdit();
-            destEdit->setProjectItemID (destEditProjectItem->getID());
+            destEdit->setProjectItemRef (destEditProjectItem->getProjectItemRef());
 
             auto track = getAudioTracks (*destEdit)[0];
             auto editClip = insertEditClip (*track, { 0_tp, TimeDuration::fromSeconds (sourceEditProjectItem->getLength()) },
-                                            sourceEditProjectItem->getID());
+                                            sourceEditProjectItem->getProjectItemRef());
             CHECK(editClip);
             editClip->setUsesProxy (false);
 
             CHECK(editClip->getPosition().getLength().inSeconds() == doctest::Approx (5.0));
-            CHECK(editClip->getAutoTempo());
-            CHECK(editClip->getAutoPitch());
 
             CHECK(destEdit->getLength().inSeconds() == doctest::Approx (5.0));
+
+            // Disable auto-tempo/pitch so the EditClip plays the proxy file directly
+            // without going through a time-stretcher (which introduces block-size-dependent latency)
+            editClip->setAutoTempo (false);
+            editClip->setAutoPitch (false);
+
+            // Wait for the EditClip's proxy to be rendered before the dest render
+            while (! editClip->getPlaybackFile().isValid())
+                test_utilities::runDispatchLoop (10);
 
             // Render
             auto tempDestRender = test_utilities::renderToAudioBufferDispatchingMessageThread (*destEdit);
@@ -95,7 +102,7 @@ TEST_SUITE("tracktion_engine")
                     == doctest::Approx (0.707f).epsilon (0.01));
 
             // Finally, sum the buffers together negating one of them, they should cancel
-            CHECK(tempSourceRender.buffer.getNumSamples() == tempDestRender.buffer.getNumSamples());
+            REQUIRE (tempSourceRender.buffer.getNumSamples() == tempDestRender.buffer.getNumSamples());
             tempDestRender.buffer.addFrom (0, 0, tempSourceRender.buffer,
                                            0, 0, tempSourceRender.buffer.getNumSamples(),
                                            -1.0f);

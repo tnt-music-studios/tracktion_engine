@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 
 //==============================================================================
@@ -20,6 +19,7 @@ struct SpeedRampWaveNode::PerChannelState
 
     juce::LagrangeInterpolator resampler;
     float lastSample = 0;
+    bool resamplerNeedsPriming = true;
 };
 
 
@@ -30,8 +30,8 @@ SpeedRampWaveNode::SpeedRampWaveNode (const AudioFile& af,
                                       TimeRange loop,
                                       LiveClipLevel level,
                                       double speed,
-                                      const juce::AudioChannelSet& channelSetToUse,
-                                      const juce::AudioChannelSet& destChannelsToFill,
+                                      const ChannelConfiguration& channelSetToUse,
+                                      const ChannelConfiguration& destChannelsToFill,
                                       ProcessState& ps,
                                       EditItemID itemIDToUse,
                                       bool isRendering,
@@ -62,7 +62,7 @@ tracktion::graph::NodeProperties SpeedRampWaveNode::getNodeProperties()
     tracktion::graph::NodeProperties props;
     props.hasAudio = true;
     props.hasMidi = false;
-    props.numberOfChannels = destChannels.size();
+    props.numberOfChannels = destChannels.getNumChannels();
     props.nodeID = (size_t) editItemID.getRawID();
 
     return props;
@@ -78,7 +78,7 @@ void SpeedRampWaveNode::prepareToPlay (const tracktion::graph::PlaybackInitialis
     channelState.clear();
 
     if (reader != nullptr)
-        for (int i = std::max (channelsToUse.size(), reader->getNumChannels()); --i >= 0;)
+        for (int i = std::max (channelsToUse.getNumChannels(), reader->getNumChannels()); --i >= 0;)
             channelState.add (new PerChannelState());
 }
 
@@ -148,8 +148,10 @@ int64_t SpeedRampWaveNode::editTimeToFileSample (TimePosition editTime) const no
         jassert (speedFadeDescription.outTimeRange.containsInclusive (editTime));
     }
 
-    return (int64_t) ((editTime - (editPosition.getStart() - offset)).inSeconds()
-                       * originalSpeedRatio * audioFileSampleRate + 0.5);
+    // N.B. floor rather than truncate so times before the clip start (which happen when a
+    // block straddles it) round to the nearest sample like all the others
+    return (int64_t) std::floor ((editTime - (editPosition.getStart() - offset)).inSeconds()
+                                  * originalSpeedRatio * audioFileSampleRate + 0.5);
 }
 
 bool SpeedRampWaveNode::updateFileSampleRate()
@@ -199,18 +201,23 @@ void SpeedRampWaveNode::processSection (ProcessContext& pc, juce::Range<int64_t>
 
     auto destBuffer = pc.buffers.audio;
     auto numSamples = destBuffer.getNumFrames();
-    const auto destBufferChannels = juce::AudioChannelSet::canonicalChannelSet ((int) destBuffer.getNumChannels());
-    auto numChannels = (choc::buffer::ChannelCount) destBufferChannels.size();
+    auto numChannels = (choc::buffer::ChannelCount) destChannels.size();
     assert (pc.buffers.audio.getNumChannels() == numChannels);
 
-    AudioScratchBuffer fileData ((int) numChannels, numFileSamples + 2);
+    // The resampler's output lags its input by its base latency, so read that many extra
+    // frames and feed the resampler from that far in. After a reset, the skipped frames
+    // prime its history so the first output frame lines up with fileStart
+    constexpr int resamplerLatency = static_cast<int> (juce::LagrangeInterpolator::getBaseLatency());
+    const auto numFileSamplesToRead = numFileSamples + resamplerLatency + 2;
+
+    AudioScratchBuffer fileData ((int) numChannels, numFileSamplesToRead);
 
     uint32_t lastSampleFadeLength = 0;
 
     {
         SCOPED_REALTIME_CHECK
 
-        if (reader->readSamples (numFileSamples + 2, fileData.buffer, destBufferChannels, 0,
+        if (reader->readSamples (numFileSamplesToRead, fileData.buffer, destChannels, 0,
                                  channelsToUse,
                                  isOfflineRender ? 5000 : 3))
         {
@@ -253,13 +260,20 @@ void SpeedRampWaveNode::processSection (ProcessContext& pc, juce::Range<int64_t>
             const auto dest = destBuffer.getChannel (channel).data.data;
 
             auto& state = *channelState.getUnchecked ((int) channel);
-            state.resampler.processAdding (ratio, src, dest, (int) numSamples, gains[channel & 1]);
+
+            if (std::exchange (state.resamplerNeedsPriming, false))
+            {
+                float discarded[resamplerLatency];
+                state.resampler.process (1.0, src, discarded, resamplerLatency);
+            }
+
+            state.resampler.processAdding (ratio, src + resamplerLatency, dest, (int) numSamples, gains[channel & 1]);
 
             if (lastSampleFadeLength > 0)
             {
                 for (uint32_t i = 0; i < lastSampleFadeLength; ++i)
                 {
-                    auto alpha = i / (float) lastSampleFadeLength;
+                    auto alpha = static_cast<float> (i) / static_cast<float> (lastSampleFadeLength);
                     dest[i] = alpha * dest[i] + state.lastSample * (1.0f - alpha);
                 }
             }
@@ -341,4 +355,4 @@ double SpeedRampWaveNode::rescale (AudioFadeCurve::Type t, double proportion, bo
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

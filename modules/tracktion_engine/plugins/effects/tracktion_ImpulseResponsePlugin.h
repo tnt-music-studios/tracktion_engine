@@ -9,8 +9,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -72,6 +71,8 @@ public:
     juce::String getSelectableDescription() override;
 
     /** @internal */
+    BusLayout getBusses() const override   { return BusLayout::singleStereoInOut(); }
+    /** @internal */
     double getLatencySeconds() override;
     /** @internal */
     void initialise (const PluginInitialisationInfo&) override;
@@ -120,4 +121,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ImpulseResponsePlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

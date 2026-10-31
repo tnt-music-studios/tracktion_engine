@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class AuxReturnPlugin   : public Plugin
 {
@@ -24,13 +23,13 @@ public:
     juce::String getPluginType() override                                   { return xmlTypeName; }
     juce::String getShortName (int suggestedMaxLength) override;
     juce::String getSelectableDescription() override                        { return TRANS("Aux Return Plugin"); }
-    int getNumOutputChannelsGivenInputs (int numInputChannels) override     { return juce::jmin (numInputChannels, 2); }
+    int getNumOutputChannelsGivenInputs (int numInputChannels) override     { return numInputChannels; }
+    BusLayout getBusses() const override   { return BusLayout::singlePassThrough(); }
 
     void initialise (const PluginInitialisationInfo&) override;
     void deinitialise() override;
     void applyToBuffer (const PluginRenderContext&) override;
 
-    bool takesAudioInput() override                  { return true; }
     bool takesMidiInput() override                   { return true; }
     bool producesAudioWhenNoAudioInput() override    { return true; }
     bool canBeAddedToClip() override                 { return false; }
@@ -45,4 +44,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AuxReturnPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

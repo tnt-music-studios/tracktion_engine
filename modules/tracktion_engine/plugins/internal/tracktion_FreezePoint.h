@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class FreezePointPlugin    : public Plugin
 {
@@ -98,9 +97,11 @@ public:
     void deinitialise() override;
     void applyToBuffer (const PluginRenderContext&) override;
     int getNumOutputChannelsGivenInputs (int numInputChannels) override     { return numInputChannels; }
+    BusLayout getBusses() const override   { return BusLayout::singlePassThrough(); }
 
     bool isTrackFrozen() const;
-    void freezeTrack (bool shouldBeFrozen);
+    /** Freezes or unfreezes the track, returning why if it couldn't be frozen. @see Track::setFrozen */
+    [[nodiscard]] juce::Result freezeTrack (bool shouldBeFrozen);
 
 private:
     //==============================================================================
@@ -111,4 +112,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FreezePointPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

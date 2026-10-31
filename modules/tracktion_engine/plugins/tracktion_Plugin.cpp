@@ -8,8 +8,20 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
+
+PluginRenderContext::PluginRenderContext (juce::AudioBuffer<float>* buffer,
+                                          int bufferStart, int bufferSize,
+                                          MidiMessageArray* midiBuffer, double midiOffset,
+                                          TimeRange editTimeRange, bool playing, bool scrubbing, bool rendering,
+                                          bool shouldAllowBypassedProcessing) noexcept
+    : destBuffer (buffer),
+      bufferStartSample (bufferStart), bufferNumSamples (bufferSize),
+      bufferForMidiMessages (midiBuffer), midiBufferOffset (midiOffset),
+      editTime (editTimeRange),
+      isPlaying (playing), isScrubbing (scrubbing), isRendering (rendering),
+      allowBypassedProcessing (shouldAllowBypassedProcessing)
+{}
 
 PluginRenderContext::PluginRenderContext (juce::AudioBuffer<float>* buffer,
                                           const juce::AudioChannelSet& bufferChannels,
@@ -91,6 +103,7 @@ Plugin::Plugin (PluginCreationInfo info)
     processing.referTo (state, IDs::process, um, true);
     frozen.referTo (state, IDs::frozen, um);
     quickParamName.referTo (state, IDs::quickParamName, um);
+    customName.referTo (state, IDs::customName, um);
     masterPluginID.referTo (state, IDs::masterPluginID, um);
     sidechainSourceID.referTo (state, IDs::sidechainSourceID, um);
 
@@ -109,8 +122,6 @@ Plugin::Plugin (PluginCreationInfo info)
         });
     }
    #endif
-
-    windowState->windowLocked = state [IDs::windowLocked];
 
     if (state.hasProperty (IDs::windowX))
         windowState->lastWindowBounds = juce::Rectangle<int> (state[IDs::windowX],
@@ -142,6 +153,24 @@ int Plugin::getNumOutputChannelsGivenInputs (int)
     juce::StringArray outs;
     getChannelNames (nullptr, &outs);
     return outs.size();
+}
+
+Plugin::BusLayout Plugin::BusLayout::singleInOut (ChannelConfiguration mainInput, ChannelConfiguration mainOutput)
+{
+    BusLayout layout;
+    layout.inputs.push_back (std::move (mainInput));
+    layout.outputs.push_back (std::move (mainOutput));
+    return layout;
+}
+
+Plugin::BusLayout Plugin::BusLayout::singleStereoInOut()
+{
+    return singleInOut (ChannelConfiguration::stereo(), ChannelConfiguration::stereo());
+}
+
+Plugin::BusLayout Plugin::BusLayout::singlePassThrough()
+{
+    return singleInOut (ChannelConfiguration::none(), ChannelConfiguration::none());
 }
 
 int Plugin::getNumWires() const
@@ -436,7 +465,34 @@ void Plugin::setFrozen (bool shouldBeFrozen)
 
 juce::String Plugin::getTooltip()
 {
-    return getName() + "$genericfilter";
+    return getDisplayName() + "$genericfilter";
+}
+
+juce::String Plugin::getDisplayName() const
+{
+    auto cn = customName.get().trim();
+    return cn.isNotEmpty() ? cn : getName();
+}
+
+juce::String Plugin::getCustomName() const
+{
+    return customName.get();
+}
+
+void Plugin::setCustomName (const juce::String& name)
+{
+    auto trimmed = name.trim();
+
+    if (trimmed.isEmpty())
+    {
+        state.removeProperty (IDs::customName, getUndoManager());
+        return;
+    }
+
+    if (trimmed.length() > 64)
+        trimmed = trimmed.substring (0, 64);
+
+    customName = trimmed;
 }
 
 void Plugin::reset() {}
@@ -461,6 +517,16 @@ void Plugin::baseClassInitialise (const PluginInitialisationInfo& info)
     if (initialiseCount++ == 0 || sampleRateOrBlockSizeChanged)
     {
         CRASH_TRACER
+
+        // initialise() must never run whilst another graph still holds (and may be
+        // processing) this plugin. If you hit this, the graph using the old rate or
+        // block size should have been destroyed before this one was built
+        if (initialiseCount > 1)
+        {
+            TRACKTION_LOG_ERROR ("Plugin re-initialised whilst still in use by another graph: " + getName());
+            jassertfalse;
+        }
+
         isInitialisingFlag = true;
         initialise (info);
         isInitialisingFlag = false;
@@ -657,10 +723,12 @@ void Plugin::applyToBufferWithAutomation (const PluginRenderContext& pc)
 {
     SCOPED_REALTIME_CHECK
 
+   #if TRACKTION_ENABLE_PLUGIN_CPU_MEASUREMENT
     std::optional<ScopedCpuMeter> cpuMeter;
 
     if (shouldMeasureCpuUsage())
         cpuMeter.emplace (cpuUsageMs, 0.2);
+   #endif
 
     auto& arm = edit.getAutomationRecordManager();
     jassert (initialiseCount > 0);
@@ -716,7 +784,7 @@ bool Plugin::hasNameForMidiBank (int, juce::String&)
 
 //==============================================================================
 juce::Array<Exportable::ReferencedItem> Plugin::getReferencedItems()  { return {}; }
-void Plugin::reassignReferencedItem (const ReferencedItem&, ProjectItemID, double) {}
+void Plugin::reassignReferencedItem (const ReferencedItem&, ProjectItemRef, double) {}
 
 //==============================================================================
 static bool mirrorPluginIsRecursive (Plugin& p, int depth)
@@ -931,8 +999,7 @@ void Plugin::flushPluginStateToValueTree()
 
         state.setProperty (IDs::windowX, windowState->lastWindowBounds->getX(), um);
         state.setProperty (IDs::windowY, windowState->lastWindowBounds->getY(), um);
-        state.setProperty (IDs::windowLocked, windowState->windowLocked, um);
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

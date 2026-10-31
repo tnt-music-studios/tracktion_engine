@@ -2,15 +2,15 @@ cmake_minimum_required(VERSION 3.16)
 
 project(choc_tests)
 
-add_executable(choc_tests main.cpp main2.cpp)
+add_executable(choc_tests choc_tests.cpp choc_tests.h)
 
 # To test V8, there needs to be a suitable folder somewhere with a build
-# set(V8_LOCATION "/Users/jules/code/v8")
+# set(V8_LOCATION "/path_to_your_v8_folder/v8")
 # set(V8_BUILD_NAME "arm64.release")
 
 # To test the HTTP server, you'll need boost beast and its dependencies, in a
 # folder at this location:
-# set(BOOST_LOCATION "/Users/jules/code/cmajor-dev/cmajor/3rdParty/boost")
+# set(BOOST_LOCATION "/path_to_your_boost_installation/boost")
 
 target_compile_features(choc_tests PRIVATE cxx_std_20)
 
@@ -28,13 +28,14 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR
 
     # Enable additional Clang warnings
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wint-conversion -Woverloaded-virtual -Wshorten-64-to-32 -Wconditional-uninitialized -Wconstant-conversion -Wunused-private-field -Wbool-conversion -Wextra-semi -Wshadow-uncaptured-local")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wint-conversion -Woverloaded-virtual -Wshorten-64-to-32 -Wconditional-uninitialized -Wconstant-conversion -Wunused-private-field -Wbool-conversion -Wextra-semi -Wshadow-uncaptured-local -Wdeprecated-declarations -Wdangling-assignment-gsl")
 
         # V8 screws up the sanitizer...
         if (DEFINED V8_LOCATION)
             set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DCHOC_V8_AVAILABLE=1 -DV8_COMPRESS_POINTERS=1 -DV8_ENABLE_SANDBOX=1")
         else()
             set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=undefined")
+            target_link_libraries(choc_tests PRIVATE "-fsanitize=undefined")
         endif()
     endif()
 
@@ -70,7 +71,7 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
 
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc /W4 /WX -DWIN32 /bigobj ")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc /W4 /WX /w14355 -DWIN32 /bigobj ")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 endif()
 

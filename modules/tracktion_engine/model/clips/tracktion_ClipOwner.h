@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Base class for items that can contain clips.
@@ -84,13 +83,82 @@ enum class DeleteExistingClips
     yes /*<< Replace existing clips with new ones. */
 };
 
-/** Inserts a clip with the given state in to the ClipOwner's clip list. */
+/** Creates a clip with the given state in the ClipOwner's clip list.
+
+    The state is treated as a brand new clip, so the defaults for a newly created
+    clip are applied to it and EngineBehaviour::newClipCreated is called. If the
+    owner is a ClipSlot the clip is also prepared for the launcher.
+
+    To move or copy a clip that already exists, use Clip::moveTo or insertClipCopy
+    so the clip keeps the settings it has.
+*/
 Clip* insertClipWithState (ClipOwner&, juce::ValueTree);
 
-/** Inserts a clip with the given state in to the ClipOwner's clip list. */
+/** Creates a clip with the given state in the ClipOwner's clip list.
+    @see insertClipWithState (ClipOwner&, juce::ValueTree)
+*/
 Clip* insertClipWithState (ClipOwner&,
                            const juce::ValueTree& stateToUse, const juce::String& name, TrackItem::Type,
                            ClipPosition, DeleteExistingClips, bool allowSpottingAdjustment);
+
+//==============================================================================
+/** Holds a copy of an existing clip's state, along with whether that clip was in
+    the launcher.
+
+    Inserting one of these copies the clip as it is: none of the defaults for a
+    newly created clip are applied, so the copy keeps the settings the user gave
+    the original. A clip that comes from outside the launcher is still prepared
+    for the launcher when it's inserted in to a ClipSlot.
+
+    There's deliberately no way to build one of these from an arbitrary state -
+    it can only describe a clip that already exists.
+*/
+class ClipCopy
+{
+public:
+    /** Takes a copy of a live clip's state.
+        The caller is responsible for giving the copy new EditItemIDs if the
+        original is going to stay in the Edit.
+    */
+    static ClipCopy fromClip (const Clip&);
+
+    /** Describes a clip state that came from the clipboard.
+        @param stateToUse           The clip state, with its IDs already remapped
+        @param sourceWasInLauncher  Whether the clip it was copied from was in a ClipSlot
+    */
+    static ClipCopy fromClipboardState (juce::ValueTree stateToUse, bool sourceWasInLauncher);
+
+    /** Returns a copy with a new EditItemID, for when the clip it was taken from
+        is staying in the Edit.
+    */
+    ClipCopy withNewItemID (Edit&) const;
+
+    /** Returns the state that will be inserted. */
+    const juce::ValueTree& getState() const                 { return state; }
+
+    /** Returns true if the clip this was taken from was in a ClipSlot. */
+    bool wasInLauncher() const                              { return sourceWasInLauncher; }
+
+private:
+    ClipCopy (juce::ValueTree, bool);
+
+    juce::ValueTree state;
+    bool sourceWasInLauncher = false;
+};
+
+/** Inserts a copy of an existing clip in to the ClipOwner's clip list.
+    @see ClipCopy
+*/
+Clip* insertClipCopy (ClipOwner&, const ClipCopy&);
+
+/** Applies the settings a clip needs to be used in the launcher: no clip effects
+    or proxy, starting at 0 and looping over its length.
+
+    This is done for clips that are created in a ClipSlot and for clips that move
+    in to one from the arrangement. Clips that are already in the launcher keep
+    their own settings.
+*/
+void prepareClipForLauncher (Clip&);
 
 //==============================================================================
 /** Inserts a new clip with the given type and a default name. */
@@ -108,7 +176,7 @@ juce::ReferenceCountedObjectPtr<WaveAudioClip> insertWaveClip (ClipOwner&, const
                                                                ClipPosition, DeleteExistingClips);
 
 /** Inserts a new WaveAudioClip into the ClipOwner's clip list. */
-juce::ReferenceCountedObjectPtr<WaveAudioClip> insertWaveClip (ClipOwner&, const juce::String& name, ProjectItemID sourceID,
+juce::ReferenceCountedObjectPtr<WaveAudioClip> insertWaveClip (ClipOwner&, const juce::String& name, ProjectItemRef sourceID,
                                                                ClipPosition, DeleteExistingClips);
 
 /** Inserts a new MidiClip into the ClipOwner's clip list. */
@@ -118,7 +186,7 @@ juce::ReferenceCountedObjectPtr<MidiClip> insertMIDIClip (ClipOwner&, const juce
 juce::ReferenceCountedObjectPtr<MidiClip> insertMIDIClip (ClipOwner&, TimeRange);
 
 /** Inserts a new EditClip into the ClipOwner's clip list. */
-juce::ReferenceCountedObjectPtr<EditClip> insertEditClip (ClipOwner&, TimeRange, ProjectItemID);
+juce::ReferenceCountedObjectPtr<EditClip> insertEditClip (ClipOwner&, TimeRange, ProjectItemRef);
 
 //==============================================================================
 /** Removes a region of a ClipOwner and returns any newly created clips. */
@@ -130,7 +198,9 @@ juce::Array<Clip*> deleteRegion (Clip&, TimeRange);
 /** Splits the given clp owner at the time and returns any newly created clips. */
 juce::Array<Clip*> split (ClipOwner&, TimePosition);
 
-/** Splits the given clip at the time and returns the newly created clip. */
+/** Splits the given clip at the time and returns the newly created clip.
+    Clips in a ClipSlot can't be split, so this returns nullptr for them.
+*/
 Clip* split (Clip&, TimePosition);
 
 /** Returns true if the clip owner contains any MIDI clips. */
@@ -236,4 +306,4 @@ inline juce::Array<ClipType*> getClipsOfTypeRecursive (const ClipOwner& parent)
     return results;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

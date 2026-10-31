@@ -12,8 +12,7 @@
  #define REPLACE_ELASTIQUE_WITH_DIRECT_MODE 1
 #endif
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 //==============================================================================
@@ -75,10 +74,10 @@ class AudioFileCacheReader final    : public AudioReader
 {
 public:
     AudioFileCacheReader (AudioFileCache::Reader::Ptr ptr, TimeDuration timeout,
-                          const juce::AudioChannelSet& destBufferChannels,
-                          const juce::AudioChannelSet& sourceBufferChannels)
+                          const ChannelConfiguration& destChannels,
+                          const ChannelConfiguration& sourceChannels)
         : reader (std::move (ptr)), timeoutMs ((int) std::lround (timeout.inSeconds() * 1000.0)),
-          destChannelSet (destBufferChannels), sourceChannelSet (sourceBufferChannels)
+          destChannelConfig (destChannels), sourceChannelConfig (sourceChannels)
     {
     }
 
@@ -120,17 +119,17 @@ public:
         auto buffer = toAudioBuffer (destBuffer);
         return reader->readSamples ((int) destBuffer.getNumFrames(),
                                     buffer,
-                                    destChannelSet,
+                                    destChannelConfig,
                                     0,
-                                    sourceChannelSet,
+                                    sourceChannelConfig,
                                     timeoutMs);
     }
 
     AudioFileCache::Reader::Ptr reader;
     int timeoutMs;
-    const juce::AudioChannelSet destChannelSet;
-    const juce::AudioChannelSet sourceChannelSet;
-    const choc::buffer::ChannelCount numChannels { static_cast<choc::buffer::ChannelCount> (destChannelSet.size()) };
+    const ChannelConfiguration destChannelConfig;
+    const ChannelConfiguration sourceChannelConfig;
+    const choc::buffer::ChannelCount numChannels { static_cast<choc::buffer::ChannelCount> (destChannelConfig.size()) };
 };
 
 //==============================================================================
@@ -291,6 +290,11 @@ public:
 
     void setPosition (TimePosition t) override
     {
+        // If the position has jumped, reset so the interpolator doesn't blend in samples from the
+        // old position. This also clears the latency offset so it's re-compensated on the next read
+        if (std::abs (toSamples (t, destSampleRate) - getPosition()) > 1)
+            reset();
+
         source->setPosition (t + timeSourceIsAheadDueToLatency);
     }
 
@@ -597,14 +601,16 @@ public:
     {
         timeStretcher.initialise (source->getSampleRate(), chunkSize, numChannels,
                                   mode, elastiqueProOptions, true);
-        inputFifo.setSize (numChannels, timeStretcher.getMaxFramesNeeded());
-        outputFifo.setSize (numChannels, timeStretcher.getMaxFramesNeeded());
+        latencySamples = timeStretcher.getLatencySamples();
+        inputFifo.setSize (numChannels, timeStretcher.getMaxFramesNeeded() + 1);
+        outputFifo.setSize (numChannels, timeStretcher.getMaxFramesNeeded() + 1);
 
         source->setPosition (getReadPosition());
         timeStretcher.reset();
         setSpeedAndPitch (playbackSpeedRatio, semitonesShift);
         inputFifo.reset();
         outputFifo.reset();
+        primeStretcher();
     }
 
     SampleCount getPosition() override
@@ -624,6 +630,7 @@ public:
         setSpeedAndPitch (playbackSpeedRatio, semitonesShift);
         inputFifo.reset();
         outputFifo.reset();
+        primeStretcher();
     }
 
     void setPosition (TimePosition t) override
@@ -677,26 +684,8 @@ public:
                 break;
             }
 
-            const auto numThisTime = timeStretcher.getFramesNeeded();
-
-            if (numThisTime > 0)
-            {
-                // Read samples from source and push to fifo
-                AudioScratchBuffer scratchBuffer (numChannels, numThisTime);
-                scratchBuffer.buffer.clear();
-                auto scratchView = toBufferView (scratchBuffer.buffer);
-
-                if (! source->readSamples (scratchView))
-                    return false;
-
-                inputFifo.write (scratchBuffer.buffer);
-            }
-
-            // Push into time-stretcher and read output samples to out fifo
-            assert (inputFifo.getNumReady() >= numThisTime);
-            assert (outputFifo.getFreeSpace() >= numThisTime);
-            assert (outputFifo.getFreeSpace() >= chunkSize);
-            timeStretcher.processData (inputFifo, numThisTime, outputFifo);
+            if (! feedAndProcess())
+                return false;
         }
 
         readPosition += numFramesToDo * playbackSpeedRatio;
@@ -706,6 +695,7 @@ public:
 
     static constexpr int chunkSize = 256;
     const int numChannels;
+    int latencySamples = 0;
     TimeStretcher timeStretcher;
     AudioFifo inputFifo { numChannels, chunkSize }, outputFifo { numChannels, chunkSize };
     double playbackSpeedRatio = 1.0, semitonesShift = 0.0, readPosition = 0.0;
@@ -713,6 +703,67 @@ public:
     SampleCount getReadPosition() const
     {
         return static_cast<SampleCount> (readPosition + 0.5);
+    }
+
+    // Reads source audio, feeds it to the stretcher, and produces output into the FIFO
+    bool feedAndProcess()
+    {
+        const auto numThisTime = timeStretcher.getFramesNeeded();
+
+        if (numThisTime > 0)
+        {
+            AudioScratchBuffer scratchBuffer (numChannels, numThisTime);
+            scratchBuffer.buffer.clear();
+            auto scratchView = toBufferView (scratchBuffer.buffer);
+
+            if (! source->readSamples (scratchView))
+                return false;
+
+            inputFifo.write (scratchBuffer.buffer);
+        }
+
+        // N.B. processData only ever writes up to chunkSize frames to the output FIFO
+        // so that's all the space that needs to be free, not numThisTime
+        assert (inputFifo.getNumReady() >= numThisTime);
+        assert (outputFifo.getFreeSpace() >= chunkSize);
+        timeStretcher.processData (inputFifo, numThisTime, outputFifo);
+
+        return true;
+    }
+
+    // Pre-feeds real audio into the stretcher and discards the initial output
+    // to handle the stretcher's startup latency locally
+    void primeStretcher()
+    {
+        if (latencySamples <= 0)
+            return;
+
+        // Back up the source to provide real audio context for the warmup
+        const auto position = static_cast<SampleCount> (readPosition);
+        const auto backupPos = std::max (SampleCount (0), position - latencySamples);
+        source->setPosition (backupPos);
+
+        // The stretcher's output lags its input by latencySamples so to line the next
+        // output frame up with readPosition, the frames between backupPos and
+        // readPosition have to be discarded as well as the latency region itself
+        const auto numToDiscard = static_cast<int> (position - backupPos) + latencySamples;
+        int outputDiscarded = 0;
+
+        while (outputDiscarded < numToDiscard)
+        {
+            if (! feedAndProcess())
+                break;
+
+            const int available = outputFifo.getNumReady();
+            const int toDiscard = std::min (numToDiscard - outputDiscarded, available);
+
+            if (toDiscard > 0)
+            {
+                AudioScratchBuffer discardBuf (numChannels, toDiscard);
+                outputFifo.read (discardBuf.buffer, 0, toDiscard);
+                outputDiscarded += toDiscard;
+            }
+        }
     }
 };
 
@@ -728,10 +779,12 @@ public:
     {
         timeStretcher.initialise (source->getSampleRate(), chunkSize, numChannels,
                                   mode, elastiqueProOptions, true);
+        latencySamples = timeStretcher.getLatencySamples();
 
         source->setPosition (getReadPosition());
         timeStretcher.reset();
         setSpeedAndPitch (playbackSpeedRatio, semitonesShift);
+        primeStretcher();
     }
 
     SampleCount getPosition() override
@@ -749,6 +802,7 @@ public:
         source->setPosition (t);
         timeStretcher.reset();
         setSpeedAndPitch (playbackSpeedRatio, semitonesShift);
+        primeStretcher();
     }
 
     void setPosition (TimePosition t) override
@@ -829,6 +883,7 @@ public:
     }
 
     const int numChannels, chunkSize = 1024;
+    int latencySamples = 0;
     ReadAheadTimeStretcher timeStretcher { 3 };
     double playbackSpeedRatio = 1.0, semitonesShift = 0.0, readPosition = 0.0;
 
@@ -851,6 +906,40 @@ public:
             return false;
 
         return timeStretcher.pushData (scratchBuffer.buffer.getArrayOfReadPointers(), numSourceFrames) == numSourceFrames;
+    }
+
+    // Pre-feeds real audio into the stretcher and discards initial output
+    // to handle the stretcher's startup latency locally
+    void primeStretcher()
+    {
+        if (latencySamples <= 0)
+            return;
+
+        const auto position = static_cast<SampleCount> (readPosition);
+        const auto backupPos = std::max (SampleCount (0), position - latencySamples);
+        source->setPosition (backupPos);
+
+        // The stretcher's output lags its input by latencySamples so to line the next
+        // output frame up with readPosition, the frames between backupPos and
+        // readPosition have to be discarded as well as the latency region itself
+        const auto numToDiscard = static_cast<int> (position - backupPos) + latencySamples;
+        int outputDiscarded = 0;
+
+        while (outputDiscarded < numToDiscard)
+        {
+            if (const auto numToPush = timeStretcher.getFramesRecomended(); numToPush > 0)
+                readSourceAndPushFrames (numToPush);
+
+            // Only ever discard up to the target so the stretcher isn't left ahead of readPosition
+            const int numThisTime = std::min (chunkSize, numToDiscard - outputDiscarded);
+            AudioScratchBuffer discardBuf (numChannels, numThisTime);
+            const int numRead = timeStretcher.popData (discardBuf.buffer.getArrayOfWritePointers(), numThisTime);
+
+            if (numRead <= 0)
+                break;
+
+            outputDiscarded += numRead;
+        }
     }
 };
 
@@ -1513,6 +1602,7 @@ struct WaveNode::PerChannelState
 
     juce::LagrangeInterpolator resampler;
     float lastSample = 0;
+    bool resamplerNeedsPriming = true;
 };
 
 
@@ -1523,11 +1613,12 @@ WaveNode::WaveNode (const AudioFile& af,
                     TimeRange loop,
                     LiveClipLevel level,
                     double speed,
-                    const juce::AudioChannelSet& channelSetToUse,
-                    const juce::AudioChannelSet& destChannelsToFill,
+                    const ChannelConfiguration& channelSetToUse,
+                    const ChannelConfiguration& destChannelsToFill,
                     ProcessState& ps,
                     EditItemID itemIDToUse,
-                    bool isRendering)
+                    bool isRendering,
+                    std::shared_ptr<AudioClipPlayhead> playheadToUse)
    : TracktionEngineNode (ps),
      editPosition (editTime),
      loopSection (TimePosition::fromSeconds (loop.getStart().inSeconds() * speed),
@@ -1538,6 +1629,7 @@ WaveNode::WaveNode (const AudioFile& af,
      isOfflineRender (isRendering),
      audioFile (af),
      clipLevel (level),
+     playhead (std::move (playheadToUse)),
      sourceChannels (channelSetToUse),
      destChannels (destChannelsToFill)
 {
@@ -1548,7 +1640,7 @@ tracktion::graph::NodeProperties WaveNode::getNodeProperties()
     tracktion::graph::NodeProperties props;
     props.hasAudio = true;
     props.hasMidi = false;
-    props.numberOfChannels = destChannels.size();
+    props.numberOfChannels = destChannels.getNumChannels();
     props.nodeID = (size_t) editItemID.getRawID();
 
     return props;
@@ -1561,7 +1653,7 @@ void WaveNode::prepareToPlay (const tracktion::graph::PlaybackInitialisationInfo
     editPositionInSamples = tracktion::toSamples ({ editPosition.getStart(), editPosition.getEnd() }, outputSampleRate);
     updateFileSampleRate();
 
-    const int numChannelsToUse = std::max (sourceChannels.size(), reader != nullptr ? reader->getNumChannels() : 0);
+    const int numChannelsToUse = std::max (sourceChannels.getNumChannels(), reader != nullptr ? reader->getNumChannels() : 0);
     replaceChannelStateIfPossible (info.nodeGraphToReplace, numChannelsToUse);
 
     if (! channelState)
@@ -1617,8 +1709,10 @@ int64_t WaveNode::editPositionToFileSample (int64_t timelinePosition) const noex
 
 int64_t WaveNode::editTimeToFileSample (TimePosition editTime) const noexcept
 {
-    return (int64_t) ((editTime - toDuration (editPosition.getStart() - offset)).inSeconds()
-                       * originalSpeedRatio * audioFileSampleRate + 0.5);
+    // N.B. floor rather than truncate so times before the clip start (which happen when a
+    // block straddles it) round to the nearest sample like all the others
+    return (int64_t) std::floor ((editTime - toDuration (editPosition.getStart() - offset)).inSeconds()
+                                  * originalSpeedRatio * audioFileSampleRate + 0.5);
 }
 
 bool WaveNode::updateFileSampleRate()
@@ -1679,15 +1773,34 @@ void WaveNode::processSection (ProcessContext& pc, juce::Range<int64_t> timeline
     const auto fileEnd         = editTimeToFileSample (sectionEditTime.getEnd());
     const auto numFileSamples  = (int) (fileEnd - fileStart);
 
+    if (playhead != nullptr)
+    {
+        auto fileTime = TimePosition::fromSamples (fileStart, audioFileSampleRate);
+
+        if (! loopSection.isEmpty() && fileTime >= loopSection.getStart())
+        {
+            const auto loopLen = loopSection.getLength().inSeconds();
+            const auto pastStart = (fileTime - loopSection.getStart()).inSeconds();
+            fileTime = loopSection.getStart() + TimeDuration::fromSeconds (std::fmod (pastStart, loopLen));
+        }
+
+        playhead->setPosition (fileTime);
+    }
+
     reader->setReadPosition (fileStart);
 
     auto destBuffer = pc.buffers.audio;
     auto numFrames = destBuffer.getNumFrames();
-    const auto destBufferChannels = juce::AudioChannelSet::canonicalChannelSet ((int) destBuffer.getNumChannels());
-    auto numChannels = (choc::buffer::ChannelCount) destBufferChannels.size();
+    auto numChannels = (choc::buffer::ChannelCount) destChannels.size();
     assert (pc.buffers.audio.getNumChannels() == numChannels);
 
-    AudioScratchBuffer fileData ((int) numChannels, numFileSamples + 2);
+    // The resampler's output lags its input by its base latency, so read that many extra
+    // frames and feed the resampler from that far in. After a reset, the skipped frames
+    // prime its history so the first output frame lines up with fileStart
+    constexpr int resamplerLatency = static_cast<int> (juce::LagrangeInterpolator::getBaseLatency());
+    const auto numFileSamplesToRead = numFileSamples + resamplerLatency + 2;
+
+    AudioScratchBuffer fileData ((int) numChannels, numFileSamplesToRead);
 
     uint32_t lastSampleFadeLength = 0;
 
@@ -1695,7 +1808,7 @@ void WaveNode::processSection (ProcessContext& pc, juce::Range<int64_t> timeline
     {
         SCOPED_REALTIME_CHECK
 
-        if (reader->readSamples (numFileSamples + 2, fileData.buffer, destBufferChannels, 0,
+        if (reader->readSamples (numFileSamplesToRead, fileData.buffer, destChannels, 0,
                                  sourceChannels,
                                  isOfflineRender ? 5000 : 3))
         {
@@ -1726,7 +1839,7 @@ void WaveNode::processSection (ProcessContext& pc, juce::Range<int64_t> timeline
 
             for (uint32_t i = 0; i < lastSampleFadeLength; ++i)
             {
-                auto alpha = i / (float) lastSampleFadeLength;
+                auto alpha = static_cast<float> (i) / static_cast<float> (lastSampleFadeLength);
                 dest[i] = state.lastSample * (1.0f - alpha);
             }
         }
@@ -1734,6 +1847,7 @@ void WaveNode::processSection (ProcessContext& pc, juce::Range<int64_t> timeline
         for (auto state : *channelState)
         {
             state->resampler.reset();
+            state->resamplerNeedsPriming = true;
             state->lastSample = 0.0;
         }
 
@@ -1767,13 +1881,20 @@ void WaveNode::processSection (ProcessContext& pc, juce::Range<int64_t> timeline
             const auto dest = destBuffer.getIterator (channel).sample;
 
             auto& state = *channelState->getUnchecked ((int) channel);
-            state.resampler.processAdding (ratio, src, dest, (int) numFrames, gains[channel & 1]);
+
+            if (std::exchange (state.resamplerNeedsPriming, false))
+            {
+                float discarded[resamplerLatency];
+                state.resampler.process (1.0, src, discarded, resamplerLatency);
+            }
+
+            state.resampler.processAdding (ratio, src + resamplerLatency, dest, (int) numFrames, gains[channel & 1]);
 
             if (lastSampleFadeLength > 0)
             {
                 for (uint32_t i = 0; i < lastSampleFadeLength; ++i)
                 {
-                    auto alpha = i / (float) lastSampleFadeLength;
+                    auto alpha = static_cast<float> (i) / static_cast<float> (lastSampleFadeLength);
                     dest[i] = alpha * dest[i] + state.lastSample * (1.0f - alpha);
                 }
             }
@@ -1810,8 +1931,8 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
                                     TimeRange loop,
                                     LiveClipLevel level,
                                     double speed,
-                                    const juce::AudioChannelSet& channelSetToUse,
-                                    const juce::AudioChannelSet& destChannelsToFill,
+                                    const ChannelConfiguration& channelSetToUse,
+                                    const ChannelConfiguration& destChannelsToFill,
                                     ProcessState& ps,
                                     EditItemID itemIDToUse,
                                     bool isRendering,
@@ -1821,7 +1942,8 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
                                     TimeStretcher::Mode mode,
                                     TimeStretcher::ElastiqueProOptions options,
                                     float pitchChange,
-                                    ReadAhead readAhead_)
+                                    ReadAhead readAhead_,
+                                    std::shared_ptr<AudioClipPlayhead> playheadToUse)
     : TracktionEngineNode (ps),
       editPositionTime (editTime),
       loopSectionTime (loop.rescaled (loop.getStart(), speed)),
@@ -1836,6 +1958,7 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
       timeStretcherMode (utils::replaceElastiqueWithDirectModeIfNotRendering (mode, isRendering)),
       elastiqueProOptions (options),
       clipLevel (level),
+      playhead (std::move (playheadToUse)),
       channelsToUse (channelSetToUse),
       destChannels (destChannelsToFill),
       pitchChangeSemitones (pitchChange),
@@ -1852,8 +1975,8 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
     hash_combine (stateHash, removeRoundingError (offsetTime));
     hash_combine (stateHash, speedRatio);
     hash_combine (stateHash, editItemID.getRawID());
-    hash_combine (stateHash, channelsToUse.size());
-    hash_combine (stateHash, destChannels.size());
+    hash_combine (stateHash, channelsToUse.getNumChannels());
+    hash_combine (stateHash, destChannels.getNumChannels());
     hash_combine (stateHash, audioFile.getHash());
     hash_combine (stateHash, resamplingQualityToUse);
     hash_combine (stateHash, speedFadeDescription);
@@ -1877,6 +2000,7 @@ WaveNodeRealTime::WaveNodeRealTime (BeatConfig c)
       timeStretcherMode (utils::replaceElastiqueWithDirectModeIfNotRendering (c.timeStretchMode, isOfflineRender)),
       elastiqueProOptions (c.elastiqueProOptions),
       clipLevel (c.liveClipLevel),
+      playhead (std::move (c.playhead)),
       channelsToUse (c.sourceChannelsToUse),
       destChannels (c.destChannelsToFill),
       pitchChangeSemitones (c.pitchChangeSemitones),
@@ -1903,8 +2027,8 @@ WaveNodeRealTime::WaveNodeRealTime (BeatConfig c)
     hash_combine (stateHash, removeRoundingError (loopSectionBeats.getEnd()));
     hash_combine (stateHash, removeRoundingError (offsetBeats));
     hash_combine (stateHash, editItemID.getRawID());
-    hash_combine (stateHash, channelsToUse.size());
-    hash_combine (stateHash, destChannels.size());
+    hash_combine (stateHash, channelsToUse.getNumChannels());
+    hash_combine (stateHash, destChannels.getNumChannels());
     hash_combine (stateHash, audioFile.getHash());
     hash_combine (stateHash, resamplingQuality);
     hash_combine (stateHash, speedFadeDescription);
@@ -1932,8 +2056,8 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
                                     BeatDuration off,
                                     BeatRange loop,
                                     LiveClipLevel level,
-                                    const juce::AudioChannelSet& channelSetToUse,
-                                    const juce::AudioChannelSet& destChannelsToFill,
+                                    const ChannelConfiguration& channelSetToUse,
+                                    const ChannelConfiguration& destChannelsToFill,
                                     ProcessState& ps,
                                     EditItemID itemIDToUse,
                                     bool isRendering,
@@ -1946,7 +2070,8 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
                                     SyncPitch syncPitch_,
                                     std::optional<tempo::Sequence> chordPitchSequence_,
                                     float pitchChange,
-                                    ReadAhead readAhead_)
+                                    ReadAhead readAhead_,
+                                    std::shared_ptr<AudioClipPlayhead> playheadToUse)
     : TracktionEngineNode (ps),
       editPositionBeats (editTime),
       loopSectionBeats (loop),
@@ -1961,6 +2086,7 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
       timeStretcherMode (utils::replaceElastiqueWithDirectModeIfNotRendering (mode, isRendering)),
       elastiqueProOptions (options),
       clipLevel (level),
+      playhead (std::move (playheadToUse)),
       channelsToUse (channelSetToUse),
       destChannels (destChannelsToFill),
       pitchChangeSemitones (pitchChange),
@@ -1988,8 +2114,8 @@ WaveNodeRealTime::WaveNodeRealTime (const AudioFile& af,
     hash_combine (stateHash, removeRoundingError (loopSectionBeats.getEnd()));
     hash_combine (stateHash, removeRoundingError (offsetBeats));
     hash_combine (stateHash, editItemID.getRawID());
-    hash_combine (stateHash, channelsToUse.size());
-    hash_combine (stateHash, destChannels.size());
+    hash_combine (stateHash, channelsToUse.getNumChannels());
+    hash_combine (stateHash, destChannels.getNumChannels());
     hash_combine (stateHash, audioFile.getHash());
     hash_combine (stateHash, resamplingQualityToUse);
     hash_combine (stateHash, speedFadeDescription);
@@ -2026,9 +2152,8 @@ tracktion::graph::NodeProperties WaveNodeRealTime::getNodeProperties()
     tracktion::graph::NodeProperties props;
     props.hasAudio = true;
     props.hasMidi = false;
-    props.numberOfChannels = destChannels.size();
+    props.numberOfChannels = destChannels.getNumChannels();
     props.nodeID = (size_t) editItemID.getRawID();
-
     return props;
 }
 
@@ -2077,7 +2202,7 @@ bool WaveNodeRealTime::buildAudioReaderGraph()
     {
         if (auto bufferedFileReader = audioFile.engine->getBufferedAudioFileManager().get (audioFile.getFile()))
         {
-            fileCacheReader = audioFile.engine->getAudioFileManager().cache.createFallbackReader ([&bufferedFileReader] (juce::TimeSliceThread&, int) mutable -> std::unique_ptr<FallbackReader>
+            fileCacheReader = audioFile.engine->getAudioFileManager().cache.createAudioFormatReaderWithTimeout ([&bufferedFileReader] (juce::TimeSliceThread&, int) mutable -> std::unique_ptr<AudioFormatReaderWithTimeout>
                                                                                                   {
                                                                                                       return std::make_unique<BufferedFileReaderWrapper> (std::move (bufferedFileReader));
                                                                                                   });
@@ -2179,7 +2304,7 @@ bool WaveNodeRealTime::buildAudioReaderGraph()
     if (! channelState)
     {
         channelState = std::make_shared<std::vector<float>>();
-        const int numChannelsToUse = std::max (channelsToUse.size(), (int) (editReader->getNumChannels()));
+        const int numChannelsToUse = std::max (channelsToUse.getNumChannels(), (int) (editReader->getNumChannels()));
 
         for (int i = numChannelsToUse; --i >= 0;)
             channelState->emplace_back (0.0f);
@@ -2231,7 +2356,7 @@ void WaveNodeRealTime::processSection (ProcessContext& pc)
     const auto sectionEditTime = getEditTimeRange();
 
     // Check that the number of channels requested matches the destination buffer num channels
-    assert (destChannels.size() == (int) pc.buffers.audio.getNumChannels());
+    assert (destChannels.getNumChannels() == (int) pc.buffers.audio.getNumChannels());
 
     if (editReader == nullptr)
         return;
@@ -2258,6 +2383,37 @@ void WaveNodeRealTime::processSection (ProcessContext& pc)
 
         return false;
     }();
+
+    if (playhead != nullptr)
+    {
+        if (editReader->isTimeBased())
+        {
+            auto fileTime = (sectionEditTime.getStart() - toDuration (editPositionTime.getStart()) + offsetTime) * speedRatio;
+
+            if (! loopSectionTime.isEmpty() && fileTime >= loopSectionTime.getStart())
+            {
+                const auto loopLen = loopSectionTime.getLength().inSeconds();
+                const auto pastStart = (fileTime - loopSectionTime.getStart()).inSeconds();
+                fileTime = loopSectionTime.getStart() + TimeDuration::fromSeconds (std::fmod (pastStart, loopLen));
+            }
+
+            playhead->setPosition (fileTime);
+        }
+        else if (fileTempoSequence != nullptr)
+        {
+            const auto offsetIntoClip = sectionEditBeats.getStart() - editPositionBeats.getStart() - *dynamicOffsetBeats;
+            auto sourceBeats = BeatPosition::fromBeats (offsetIntoClip.inBeats() + offsetBeats.inBeats());
+
+            if (! loopSectionBeats.isEmpty() && sourceBeats >= loopSectionBeats.getStart())
+            {
+                const auto loopLen = loopSectionBeats.getLength().inBeats();
+                const auto pastStart = (sourceBeats - loopSectionBeats.getStart()).inBeats();
+                sourceBeats = loopSectionBeats.getStart() + BeatDuration::fromBeats (std::fmod (pastStart, loopLen));
+            }
+
+            playhead->setPosition (fileTempoSequence->toTime (sourceBeats));
+        }
+    }
 
     auto destBuffer = pc.buffers.audio;
     const auto numFrames = destBuffer.getNumFrames();
@@ -2315,7 +2471,7 @@ void WaveNodeRealTime::processSection (ProcessContext& pc)
             {
                 for (uint32_t i = 0; i < lastSampleFadeLength; ++i)
                 {
-                    auto alpha = i / (float) lastSampleFadeLength;
+                    auto alpha = static_cast<float> (i) / static_cast<float> (lastSampleFadeLength);
                     dest[i] = alpha * dest[i] + lastSample * (1.0f - alpha);
                 }
             }
@@ -2340,4 +2496,4 @@ tempo::Key WaveNodeRealTime::getKeyToSyncTo (TimePosition editPosition) const
     return getKey();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,7 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine
 {
 
 Edit::GlobalMacros::GlobalMacros (Edit& e)
@@ -584,7 +584,7 @@ Edit::Edit (Options options)
       tempoSequence (*this),
       state (options.editState),
       instanceId (getNextInstanceId()),
-      editProjectItemID (options.editProjectItemID),
+      editProjectItemRef (options.editProjectItemID),
       loadContext (options.loadContext),
       editRole (options.role)
 {
@@ -592,11 +592,13 @@ Edit::Edit (Options options)
 
     jassert (state.isValid());
     jassert (state.hasType (IDs::EDIT));
-    jassert (editProjectItemID.load().isValid()); // This must be valid or it won't be able to create temp files etc.
 
     if (options.editFileRetriever)
+    {
         editFileRetriever = std::move (options.editFileRetriever);
+    }
     else
+    {
         editFileRetriever = [this] () -> juce::File
         {
             if (auto item = getProjectItemForEdit (*this))
@@ -604,10 +606,14 @@ Edit::Edit (Options options)
 
             return {};
         };
+    }
 
     if (options.filePathResolver)
+    {
         filePathResolver = std::move (options.filePathResolver);
+    }
     else
+    {
         filePathResolver = [this] (const juce::String& path) -> juce::File
         {
             jassert (path.isNotEmpty());
@@ -615,11 +621,19 @@ Edit::Edit (Options options)
             if (juce::File::isAbsolutePath (path))
                 return path;
 
+            if (auto proj = editProjectItemRef.getProject())
+                return proj->getProjectFile().getChildFile (path);
+
             if (editFileRetriever)
-                return editFileRetriever().getSiblingFile (path);
+                if (auto f = editFileRetriever(); f != juce::File())
+                    return f.getSiblingFile (path);
+
+            if (auto p = getProjectForEdit (*this); p && p->isFolderBased())
+                return p->getProjectFile().getChildFile (path);
 
             return {};
         };
+    }
 
     if (loadContext != nullptr && ! loadContext->shouldExit)
         loadContext->totalNumTracks = countNumTracks (state);
@@ -653,7 +667,7 @@ Edit::Edit (Options options)
         }
 
         // Don't spam logs with preview Edits
-        if (getProjectItemID().getProjectID() != 0)
+        if (auto pid = editProjectItemRef.getProjectItemID(); pid && pid->getProjectID().isValid())
             TRACKTION_LOG ("Loaded edit: " + getName());
 
         jassert (! engine.getActiveEdits().edits.contains (this));
@@ -770,10 +784,10 @@ juce::String Edit::getName()
     return {};
 }
 
-void Edit::setProjectItemID (ProjectItemID newID)
+void Edit::setProjectItemRef (ProjectItemRef newRef)
 {
-    editProjectItemID = newID;
-    state.setProperty (IDs::projectID, editProjectItemID.load().toString(), nullptr);
+    editProjectItemRef = std::move (newRef);
+    state.setProperty (IDs::projectID, editProjectItemRef.toString(), nullptr);
 }
 
 Edit::ScopedRenderStatus::ScopedRenderStatus (Edit& ed, bool shouldReallocateOnDestruction)
@@ -819,6 +833,7 @@ void Edit::initialise (const Options& options)
 
     lastSignificantChange.referTo (state, IDs::lastSignificantChange, nullptr,
                                    juce::String::toHexString (juce::Time::getCurrentTime().toMilliseconds()));
+    alwaysUseRelativePaths.referTo (state, IDs::alwaysUseRelativePaths, nullptr, false);
 
     globalMacros = std::make_unique<GlobalMacros> (*this);
     initialiseTempoAndPitch();
@@ -909,7 +924,8 @@ void Edit::initialiseTempoAndPitch()
 
 void Edit::initialiseTimecode (juce::ValueTree& transportState)
 {
-    timecodeFormat.referTo (state, IDs::timecodeFormat, nullptr);
+    timecodeFormat.referTo (state, IDs::timecodeFormat, nullptr,
+                            engine.getEngineBehaviour().getEditDefaults().timecodeType);
 
     recordingPunchInOut.referTo (transportState, IDs::recordPunchInOut, nullptr);
     playInStopEnabled.referTo (transportState, IDs::endToEnd, nullptr, true);
@@ -1017,7 +1033,7 @@ void Edit::removeZeroLengthClips()
 
     for (auto t : getClipTracks (*this))
         for (auto& c : t->getClips())
-            if (c->getPosition().getLength().inSeconds() <= 0.0)
+            if (c->getPosition().getLength() < Clip::minimumLength)
                 clipsToRemove.add (c);
 
     for (auto& c : clipsToRemove)
@@ -1155,7 +1171,7 @@ void Edit::flushState()
     addValueTreeProperties (state,
                             IDs::appVersion, engine.getPropertyStorage().getApplicationVersion(),
                             IDs::modifiedBy, engine.getPropertyStorage().getUserName(),
-                            IDs::projectID, editProjectItemID.load().toString());
+                            IDs::projectID, editProjectItemRef.toString());
 
     for (auto p : getAllPlugins (*this, true))
         p->flushPluginStateToValueTree();
@@ -1276,6 +1292,10 @@ void Edit::redo()           { undoOrRedo (false); }
 Edit::UndoTransactionInhibitor::UndoTransactionInhibitor (Edit& e) : edit (&e)                                  { ++e.numUndoTransactionInhibitors; }
 Edit::UndoTransactionInhibitor::UndoTransactionInhibitor (const UndoTransactionInhibitor& o) : edit (o.edit)    { if (auto e = edit.get()) ++(e->numUndoTransactionInhibitors); }
 Edit::UndoTransactionInhibitor::~UndoTransactionInhibitor()                                                     { if (auto e = edit.get()) --(e->numUndoTransactionInhibitors); }
+
+Edit::SaveInhibitor::SaveInhibitor (Edit& e) : edit (&e)                                                        { ++e.numSaveInhibitors; }
+Edit::SaveInhibitor::SaveInhibitor (const SaveInhibitor& o) : edit (o.edit)                                     { if (auto e = edit.get()) ++(e->numSaveInhibitors); }
+Edit::SaveInhibitor::~SaveInhibitor()                                                                           { if (auto e = edit.get()) --(e->numSaveInhibitors); }
 
 //==============================================================================
 EditItemID Edit::createNewItemID (const std::vector<EditItemID>& idsToAvoid) const
@@ -1423,7 +1443,7 @@ Track::Ptr Edit::loadedTrack (Track::Ptr t)
 
     if (const auto total = loadContext->totalNumTracks.load();
         total > 0)
-       loadContext->progress = loadContext->numTracksLoaded.fetch_add (1) / static_cast<float> (total);
+       loadContext->progress = float (loadContext->numTracksLoaded.fetch_add (1)) / float (total);
 
     return t;
 }
@@ -1672,7 +1692,7 @@ void Edit::loadOldVideoInfo (const juce::ValueTree& videoState)
             if (auto newItem = proj->createNewItem (videoFile, ProjectItem::videoItemType(),
                                                     videoFile.getFileNameWithoutExtension(),
                                                     {}, ProjectItem::Category::video, false))
-                videoSource = newItem->getID();
+                videoSource = newItem->getProjectItemRef();
 }
 
 TimecodeDisplayFormat Edit::getTimecodeFormat() const
@@ -1720,6 +1740,12 @@ void Edit::sendTempoOrPitchSequenceChangedUpdates()
     for (auto t : getClipTracks (*this))
         for (auto& c : t->getClips())
             c->pitchTempoTrackChanged();
+
+    // Keep any ARA documents' musical contexts in sync at document level, so this
+    // also works when no ARA clips exist to forward the change (e.g. a
+    // browser/panel-only instance)
+    if (araDocumentHolder != nullptr)
+        araDocumentHolder->musicalContextContentChanged();
 }
 
 void Edit::sendSourceFileUpdate()
@@ -2101,7 +2127,7 @@ void Edit::deleteTrack (Track* t)
         jassert (! (t->isMasterTrack() || t->isMarkerTrack() || t->isTempoTrack() || t->isChordTrack()));
 
         t->deselect();
-        t->setFrozen (false, Track::groupFreeze);
+        t->unfreeze (Track::groupFreeze);
 
         // Remove any modifier assignments
         if (auto modifierList = t->getModifierList())
@@ -2571,12 +2597,14 @@ void Edit::updateFrozenTracks()
     AudioFile::deleteFiles (engine, TemporaryFileManager::getFrozenTrackFiles (*this));
 
     auto& dm = engine.getDeviceManager();
+    juce::Array<AudioTrack*> renderedTracks;
 
     for (int j = dm.getNumOutputDevices(); --j >= 0;)
     {
         if (auto outputDevice = dynamic_cast<WaveOutputDevice*> (dm.getOutputDeviceAt (j)))
         {
             juce::BigInteger frozen;
+            juce::Array<AudioTrack*> tracksForDevice;
             TimeDuration length;
             int i = 0;
 
@@ -2589,6 +2617,7 @@ void Edit::updateFrozenTracks()
                          && ! at->isMuted (true))
                     {
                         frozen.setBit (i, true);
+                        tracksForDevice.add (at);
                         length = juce::jmax (length, at->getLengthIncludingInputTracks());
                     }
                 }
@@ -2598,6 +2627,7 @@ void Edit::updateFrozenTracks()
 
             if (frozen.countNumberOfSetBits() > 0 && length > TimeDuration())
             {
+                renderedTracks.addArray (tracksForDevice);
                 length = length + TimeDuration::fromSeconds (5.0);
 
                 for (auto sm : getSelectionManagers (*this))
@@ -2648,6 +2678,25 @@ void Edit::updateFrozenTracks()
         }
     }
 
+    // Group-frozen tracks are removed from the playback graph, so any that didn't make it in to
+    // a device's freeze file (e.g. because they're muted or their output device isn't available)
+    // would be silent. Unfreeze them instead
+    juce::StringArray unrenderedTrackNames;
+
+    for (auto at : getAudioTracks (*this))
+    {
+        if (at->isFrozen (Track::groupFreeze) && ! renderedTracks.contains (at))
+        {
+            at->frozen = false;
+            at->changed();
+            unrenderedTrackNames.add (at->getName());
+        }
+    }
+
+    if (! unrenderedTrackNames.isEmpty())
+        engine.getUIBehaviour().showWarningMessage (TRANS("Couldn't freeze XTRKX because the track is muted or its output device isn't available")
+                                                      .replace ("XTRKX", unrenderedTrackNames.joinIntoString (", ")));
+
     SelectionManager::refreshAllPropertyPanels();
 }
 
@@ -2692,7 +2741,7 @@ juce::File Edit::getTempDirectory (bool createIfNonExistent) const
 
     if (result == juce::File())
         result = tempDirectory = engine.getTemporaryFileManager().getTempDirectory()
-                                    .getChildFile ("edit_" + getProjectItemID().toStringSuitableForFilename());
+                                    .getChildFile ("edit_" + editProjectItemRef.toIDForFilename());
 
     if (createIfNonExistent && ! result.createDirectory())
         TRACKTION_LOG_ERROR ("Failed to create edit temp folder: " + result.getFullPathName());
@@ -2727,7 +2776,7 @@ void Edit::setVideoFile (const juce::File& f, juce::String importDesc)
                                             importDesc, ProjectItem::Category::video, false);
 
             if (item != nullptr)
-                videoSource = item->getID();
+                videoSource = item->getProjectItemRef();
         }
     }
 }
@@ -3185,7 +3234,7 @@ std::unique_ptr<Edit> Edit::createEditForPreviewingFile (Engine& engine, const j
                 }
             }
 
-            bool isDrums = forceMidiToDrums || (float (ch10Count) / allCount > 90.0f);
+            bool isDrums = forceMidiToDrums || (float (ch10Count) / float (allCount) > 90.0f);
             auto track = isDrums ? drumTrack : midiTrack;
 
             if (auto mc = track->insertMIDIClip ({ TimePosition(), TimePosition::fromSeconds (1.0) }, nullptr))
@@ -3246,7 +3295,7 @@ std::unique_ptr<Edit> Edit::createEditForPreviewingFile (Engine& engine, const j
         if (auto wc = dynamic_cast<WaveAudioClip*> (audioTrack->insertNewClip (TrackItem::Type::wave, { 0_tp, 1_tp }, nullptr)))
         {
             wc->setUsesProxy (false);
-            wc->getSourceFileReference().setToDirectFileReference (file, false);
+            wc->getSourceFileReference().setToFile (file, SourceFileReference::PathStyle::chooseBest, true);
 
             if (editToMatch != nullptr)
             {
@@ -3256,7 +3305,7 @@ std::unique_ptr<Edit> Edit::createEditForPreviewingFile (Engine& engine, const j
                 {
                     wc->setLoopInfo (af.getInfo().loopInfo);
 
-                    engine.getEngineBehaviour().newClipAdded (*wc, false);
+                    engine.getEngineBehaviour().newClipCreated (*wc, false);
                 }
 
                 auto& targetTempo = editToMatch->tempoSequence.getTempoAt (TimePosition::fromSeconds (0.01));
@@ -3266,7 +3315,7 @@ std::unique_ptr<Edit> Edit::createEditForPreviewingFile (Engine& engine, const j
                 {
                     auto firstTempo = edit->tempoSequence.getTempo (0);
                     firstTempo->setBpm (targetTempo.getBpm());
-                    engine.getEngineBehaviour().newClipAdded (*wc, false);
+                    engine.getEngineBehaviour().newClipCreated (*wc, false);
 
                     edit->setTimecodeFormat (editToMatch->getTimecodeFormat());
                     AudioFileInfo wi = wc->getWaveInfo();
@@ -3289,7 +3338,7 @@ std::unique_ptr<Edit> Edit::createEditForPreviewingFile (Engine& engine, const j
                 {
                     auto firstPitch = edit->pitchSequence.getPitch (0);
                     firstPitch->setPitch (targetPitch->getPitch());
-                    engine.getEngineBehaviour().newClipAdded (*wc, false);
+                    engine.getEngineBehaviour().newClipCreated (*wc, false);
 
                     edit->pitchSequence.copyFrom (editToMatch->pitchSequence);
                     if (wc->getLoopInfo().getRootNote() != -1)
@@ -3325,8 +3374,12 @@ std::unique_ptr<Edit> Edit::createEditForPreviewingClip (Clip& clip)
 
     if (auto track = getFirstAudioTrack (*edit))
     {
-        if (auto c = track->insertClipWithState (clip.state.createCopy()))
+        // A preview Edit holds a copy of the clip, so it must keep its settings
+        if (auto c = insertClipCopy (*track, ClipCopy::fromClip (clip)))
         {
+            if (! clip.isMidi() && clip.getSourceFileReference().getSourceProjectItemRef().isRelativePath())
+                c->getSourceFileReference().setToFile (clip.getSourceFileReference().getFile(), SourceFileReference::PathStyle::alwaysAbsolute, false);
+
             CRASH_TRACER
             jassert (c->getPosition() == clip.getPosition());
             jassert (c->getLoopStart() == clip.getLoopStart());
@@ -3363,8 +3416,13 @@ std::unique_ptr<Edit> Edit::createSingleTrackEdit (Engine& e, EditRole roleToUse
     return {};
 }
 
+JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
+JUCE_BEGIN_IGNORE_WARNINGS_MSVC (4996)
 std::unique_ptr<Edit> Edit::createEditForExamining (Engine& e, juce::ValueTree editState, EditRole roleToUse, LoadContext* loadContextToUse)
 {
+    if (! editState.isValid())
+        return {};
+
     return createEdit (Options
     {
         e,
@@ -3378,6 +3436,8 @@ std::unique_ptr<Edit> Edit::createEditForExamining (Engine& e, juce::ValueTree e
         0 // min num audio tracks
     });
 }
+JUCE_END_IGNORE_WARNINGS_GCC_LIKE
+JUCE_END_IGNORE_WARNINGS_MSVC
 
 //==============================================================================
 EditDeleter::EditDeleter() = default;
@@ -3406,4 +3466,4 @@ juce::Array<Edit*> ActiveEdits::getEdits() const
     return eds;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

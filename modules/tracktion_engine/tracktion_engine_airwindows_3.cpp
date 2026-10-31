@@ -44,6 +44,7 @@
  #pragma clang diagnostic ignored "-Widiomatic-parentheses"
  #pragma clang diagnostic ignored "-Wconditional-uninitialized"
  #pragma clang diagnostic ignored "-Wparentheses"
+ #pragma clang diagnostic ignored "-Wunused-but-set-variable"
 #endif
 
 #if JUCE_WINDOWS
@@ -51,8 +52,7 @@
  #pragma warning (disable : 4244 4100 4305 4065 4701 4706 4723)
 #endif
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 namespace airwindows
 {
 namespace purestair
@@ -337,7 +337,7 @@ namespace ulawencode
 }
 
 }
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 
 #if JUCE_CLANG

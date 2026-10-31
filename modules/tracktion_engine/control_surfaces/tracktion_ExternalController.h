@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Acts as a holder for a ControlSurface object.
@@ -85,8 +84,8 @@ public:
     void snapChanged (bool isOn);
     void loopChanged (bool isOn);
     void clickChanged (bool isOn);
-    void channelLevelChanged (int channel, float l, float r);
-    void masterLevelsChanged (float leftLevel, float rightLevel);
+    void channelLevelChanged (int channel, std::span<const float> levels);
+    void masterLevelsChanged (std::span<const float> levels);
     void timecodeChanged (int barsOrHours, int beatsOrMinutes, int ticksOrSeconds, int millisecs, bool isBarsBeats, bool isFrames);
     void trackSelected (int channel, bool isSelected);
     void selectOtherObject (SelectableClass::Relationship, bool moveFromCurrentPlugin);
@@ -200,6 +199,7 @@ private:
     bool allowBankingOffEnd = false;
     AutomatableParameter::Array currentParams;
     SafeSelectable<Selectable> currentParamSource, lastRegisteredSelectable;
+    SafeScopedListener lastRegisteredListener;
     bool showTrackSelection = false;
     bool showClipSlotSelection = true;
     juce::Colour selectionColour;
@@ -240,4 +240,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ExternalController)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

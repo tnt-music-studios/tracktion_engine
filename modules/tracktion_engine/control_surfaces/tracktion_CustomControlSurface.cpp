@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 void CustomControlSurface::CustomControlSurfaceManager::registerSurface (CustomControlSurface* item)
 {
@@ -672,7 +671,7 @@ void CustomControlSurface::acceptMidiMessage (int, const juce::MidiMessage& m)
         int val;
         lastControllerNote = -1;
         rpnParser.parseControllerMessage (m, lastControllerID, lastControllerChannel, val);
-        lastControllerValue = val / 127.0f;
+        lastControllerValue = static_cast<float> (val) / 127.0f;
     }
 
     if (m.isNoteOn())
@@ -822,7 +821,7 @@ void CustomControlSurface::faderBankChanged (int newStartChannelNumber, const ju
     }
 }
 
-void CustomControlSurface::channelLevelChanged (int, float, float) {}
+void CustomControlSurface::channelLevelChanged (int, std::span<const float>) {}
 
 void CustomControlSurface::trackSelectionChanged (int faderIndex, bool isSelected)
 {
@@ -834,7 +833,7 @@ void CustomControlSurface::trackRecordEnabled (int faderIndex, bool recordEnable
     sendCommandToControllerForActionID (armTrackId + faderIndex, recordEnabled);
 }
 
-void CustomControlSurface::masterLevelsChanged (float, float) {}
+void CustomControlSurface::masterLevelsChanged (std::span<const float>) {}
 
 void CustomControlSurface::timecodeChanged (int barsOrHours, int beatsOrMinutes,
                                             int ticksOrSeconds, int millisecs, bool isBarsBeats, bool isFrames)
@@ -1031,7 +1030,6 @@ bool CustomControlSurface::removeMapping (ActionID id, int controllerID, int not
 //==============================================================================
 void CustomControlSurface::showMappingsEditor (juce::DialogWindow::LaunchOptions& o)
 {
-   #if JUCE_MODAL_LOOPS_PERMITTED
     if (needsMidiChannel && owner->getMidiInputDevice (0).isEmpty())
     {
         engine.getUIBehaviour().showWarningAlert (TRANS("Error"),
@@ -1040,14 +1038,16 @@ void CustomControlSurface::showMappingsEditor (juce::DialogWindow::LaunchOptions
     }
 
     listenToRow (-1);
-    o.runModal();
-    setLearntParam (false);
-    listenToRow (-1);
 
-    manager->saveAllSettings (engine);
-   #else
-    juce::ignoreUnused (o);
-   #endif
+    auto* dw = o.create();
+    dw->enterModalState (true,
+                         juce::ModalCallbackFunction::create ([this] (int)
+                         {
+                             setLearntParam (false);
+                             listenToRow (-1);
+                             manager->saveAllSettings (engine);
+                         }),
+                         true);
 }
 
 int CustomControlSurface::getNumMappings() const
@@ -1073,49 +1073,48 @@ int CustomControlSurface::getRowBeingListenedTo() const
 
 void CustomControlSurface::showMappingsListForRow (int row)
 {
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    int r = 0;
+    auto callback = [this, row] (int r) mutable
+    {
+        auto cg = commandGroups.find (r);
+
+        if (cg != commandGroups.end())
+        {
+            auto set = cg->second;
+
+            for (int i = 0; i < set->size(); ++i)
+            {
+                if (row >= mappings.size())
+                    mappings.add (new Mapping());
+
+                mappings[row]->function = (*set)[i];
+                row++;
+            }
+
+            sendChangeMessage();
+        }
+        else if (r != 0)
+        {
+            if (row >= mappings.size())
+                mappings.add (new Mapping());
+
+            mappings[row]->function = r;
+
+            sendChangeMessage();
+        }
+    };
+
     auto mouse = juce::Desktop::getInstance().getMainMouseSource();
+
     if (auto underMouse = mouse.getComponentUnderMouse())
     {
         auto pt = mouse.getScreenPosition();
         auto opts = juce::PopupMenu::Options().withTargetComponent (underMouse)
                                               .withTargetScreenArea ({ int (pt.x), int (pt.y), 1, 1 });
-        r = contextMenu.showMenu (opts);
+        contextMenu.showMenuAsync (opts, std::move (callback));
     }
     else
     {
-        r = contextMenu.show();
-    }
-   #else
-    int r = 0;
-   #endif
-
-    auto cg = commandGroups.find (r);
-
-    if (cg != commandGroups.end())
-    {
-        auto set = cg->second;
-
-        for (int i = 0; i < set->size(); ++i)
-        {
-            if (row >= mappings.size())
-                mappings.add (new Mapping());
-
-            mappings[row]->function = (*set)[i];
-            row++;
-        }
-
-        sendChangeMessage();
-    }
-    else if (r != 0)
-    {
-        if (row >= mappings.size())
-            mappings.add (new Mapping());
-
-        mappings[row]->function = r;
-
-        sendChangeMessage();
+        contextMenu.showMenuAsync ({}, std::move (callback));
     }
 }
 
@@ -1827,4 +1826,4 @@ void CustomControlSurface::clearMarker (int)
 {
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

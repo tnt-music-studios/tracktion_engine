@@ -19,7 +19,7 @@
 
   ID:               tracktion_engine
   vendor:           Tracktion Corporation
-  version:          3.1.0
+  version:          3.5.0
   name:             The Tracktion audio engine
   description:      Classes for manipulating and playing Tracktion projects
   website:          http://www.tracktion.com
@@ -57,13 +57,25 @@
 #if __has_include(<choc/audio/choc_SampleBuffers.h>)
  #include <choc/audio/choc_SampleBuffers.h>
  #include <choc/audio/choc_MIDI.h>
+ #include <choc/audio/choc_Oscillators.h>
  #include <choc/containers/choc_SingleReaderSingleWriterFIFO.h>
  #include <choc/containers/choc_NonAllocatingStableSort.h>
+ #include <choc/containers/choc_ZipFile.h>
+ #include <choc/text/choc_Files.h>
+ #include <choc/containers/choc_Value.h>
+ #include <choc/containers/choc_SmallVector.h>
+ #include <choc/text/choc_JSON.h>
 #else
- #include "../3rd_party/choc/audio/choc_SampleBuffers.h"
- #include "../3rd_party/choc/audio/choc_MIDI.h"
- #include "../3rd_party/choc/containers/choc_SingleReaderSingleWriterFIFO.h"
- #include "../3rd_party/choc/containers/choc_NonAllocatingStableSort.h"
+ #include "../3rd_party/choc/choc/audio/choc_SampleBuffers.h"
+ #include "../3rd_party/choc/choc/audio/choc_MIDI.h"
+ #include "../3rd_party/choc/choc/audio/choc_Oscillators.h"
+ #include "../3rd_party/choc/choc/containers/choc_SingleReaderSingleWriterFIFO.h"
+ #include "../3rd_party/choc/choc/containers/choc_NonAllocatingStableSort.h"
+ #include "../3rd_party/choc/choc/containers/choc_ZipFile.h"
+ #include "../3rd_party/choc/choc/text/choc_Files.h"
+ #include "../3rd_party/choc/choc/containers/choc_Value.h"
+ #include "../3rd_party/choc/choc/containers/choc_SmallVector.h"
+ #include "../3rd_party/choc/choc/text/choc_JSON.h"
 #endif
 
 #include "../3rd_party/expected/expected.hpp"
@@ -202,6 +214,14 @@
  #define TRACKTION_ENABLE_TEMPODETECT_SOUNDTOUCH 1
 #endif
 
+/** Config: TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH
+    Enables time-stretching with the Signalsmith Stretch library.
+    This is a header-only library, so no additional linking is required.
+*/
+#ifndef TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH
+ #define TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH 0
+#endif
+
 /** Config: TRACKTION_ENABLE_ABLETON_LINK
     Enables Ableton Link support.
     You must have Link in your search path if you enable this.
@@ -215,6 +235,16 @@
 */
 #ifndef TRACKTION_ENABLE_FFMPEG
  #define TRACKTION_ENABLE_FFMPEG 0
+#endif
+
+/** Config: TRACKTION_ENABLE_LIBLAME
+    Enables LibLameEncoderAudioFormat, which encodes mp3 by loading the LAME shared
+    library at runtime instead of running the LAME or FFmpeg command line tools.
+    Nothing is linked at build time, and if the library can't be found at runtime
+    LAMEManager falls back to whichever command line encoder is enabled.
+*/
+#ifndef TRACKTION_ENABLE_LIBLAME
+ #define TRACKTION_ENABLE_LIBLAME 0
 #endif
 
 /** Config: TRACKTION_UNIT_TESTS
@@ -238,6 +268,18 @@
 */
 #ifndef TRACKTION_CHECK_FOR_SLOW_RENDERING
  #define TRACKTION_CHECK_FOR_SLOW_RENDERING 0
+#endif
+
+/** Config: TRACKTION_ENABLE_PLUGIN_CPU_MEASUREMENT
+    If enabled (default), each plugin's applyToBufferWithAutomation call is
+    wrapped in a ScopedCpuMeter that reads the hi-res timer on entry and exit.
+    This feeds the per-plugin CPU usage display.
+
+    Disable this to eliminate the timer overhead in builds that don't need
+    per-plugin CPU metering (e.g. game engines, embedded, headless renders).
+*/
+#ifndef TRACKTION_ENABLE_PLUGIN_CPU_MEASUREMENT
+ #define TRACKTION_ENABLE_PLUGIN_CPU_MEASUREMENT 1
 #endif
 
 /** Config: TRACKTION_AIR_WINDOWS
@@ -285,7 +327,7 @@ namespace tracktion::inline graph
 
 
 //==============================================================================
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine
 {
     class EngineBehaviour;
     class Engine;
@@ -346,6 +388,7 @@ namespace tracktion { inline namespace engine
     class GrooveTemplate;
     class MidiOutputDevice;
     class LevelMeterPlugin;
+    class ChannelMapperPlugin;
     class VolumeAndPanPlugin;
     class VCAPlugin;
     class NovationAutomap;
@@ -389,7 +432,7 @@ namespace tracktion { inline namespace engine
     class LaunchHandle;
     class LaunchQuantisation;
     class BufferedAudioFileManager;
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 #ifdef __GNUC__
  #pragma GCC diagnostic push
@@ -397,9 +440,9 @@ namespace tracktion { inline namespace engine
 #endif
 
 //==============================================================================
-#include "../3rd_party/choc/platform/choc_DisableAllWarnings.h"
+#include "../3rd_party/choc/choc/platform/choc_DisableAllWarnings.h"
  #include "../3rd_party/crill/spin_mutex.h"
-#include "../3rd_party/choc/platform/choc_ReenableAllWarnings.h"
+#include "../3rd_party/choc/choc/platform/choc_ReenableAllWarnings.h"
 
 //==============================================================================
 #include "../tracktion_graph/utilities/tracktion_PerformanceMeasurement.h"
@@ -420,6 +463,7 @@ namespace tracktion { inline namespace engine
 #include "utilities/tracktion_Spline.h"
 #include "utilities/tracktion_Ditherer.h"
 #include "utilities/tracktion_ExternalPlayheadSynchroniser.h"
+#include "utilities/tracktion_SafeScopedListener.h"  // (needed by tracktion_Selectable.h)
 #include "selection/tracktion_Selectable.h"
 #include "selection/tracktion_SelectableClass.h"
 #include "selection/tracktion_SelectionManager.h"
@@ -432,15 +476,17 @@ namespace tracktion { inline namespace engine
 #include "utilities/tracktion_BinaryData.h"
 #include "utilities/tracktion_SettingID.h"
 #include "utilities/tracktion_SharedTimer.h"
-#include "utilities/tracktion_SafeScopedListener.h"
 #include "utilities/tracktion_ScopedListener.h"
 #include "utilities/tracktion_MouseHoverDetector.h"
 #include "utilities/tracktion_CurveEditor.h"
 #include "utilities/tracktion_Envelope.h"
 #include "utilities/tracktion_Oscillators.h"
 #include "utilities/tracktion_ScreenSaverDefeater.h"
+#include "utilities/tracktion_ChannelConfiguration.h"
+#include "utilities/tracktion_ChannelMap.h"
 
 #include "project/tracktion_ProjectItemID.h"
+#include "project/tracktion_ProjectItemRef.h"
 
 #include "playback/devices/tracktion_WaveDeviceDescription.h"
 
@@ -486,7 +532,9 @@ namespace tracktion { inline namespace engine
 #include "utilities/tracktion_ParameterHelpers.h"
 
 #include "project/tracktion_ProjectItem.h"
-#include "project/tracktion_ProjectSearchIndex.h"
+#include "project/tracktion_ProjectBase.h"
+#include "project/tracktion_FileBasedProject.h"
+#include "project/tracktion_FolderBasedProject.h"
 #include "project/tracktion_Project.h"
 #include "project/tracktion_ProjectManager.h"
 
@@ -523,6 +571,8 @@ namespace tracktion { inline namespace engine
 #include "model/edit/tracktion_EditFileOperations.h"
 #include "model/edit/tracktion_EditLoader.h"
 
+#include "project/tracktion_ProjectUtilities.h"
+
 #include "playback/tracktion_TransportControl.h"
 #include "playback/tracktion_AbletonLink.h"
 
@@ -550,9 +600,13 @@ namespace tracktion { inline namespace engine
 
 #include "audio_files/tracktion_AudioFormatManager.h"
 #include "audio_files/tracktion_AudioFileUtils.h"
+#include "audio_files/tracktion_LoudnessMeter.h"
+#include "audio_files/tracktion_StereoFieldAnalyser.h"
+#include "audio_files/tracktion_AudioFileAnalyser.h"
 #include "audio_files/tracktion_AudioFifo.h"
 #include "audio_files/tracktion_RecordingThumbnailManager.h"
 #include "audio_files/formats/tracktion_FFmpegEncoderAudioFormat.h"
+#include "audio_files/formats/tracktion_LibLameEncoderAudioFormat.h"
 #include "audio_files/formats/tracktion_FloatAudioFileFormat.h"
 #include "audio_files/formats/tracktion_MemoryMappedFileReader.h"
 #include "audio_files/formats/tracktion_LAMEManager.h"
@@ -564,6 +618,7 @@ namespace tracktion { inline namespace engine
 #include "model/automation/tracktion_ParameterChangeHandler.h"
 #include "model/automation/tracktion_ParameterControlMappings.h"
 
+#include "playback/devices/tracktion_IODevice.h"
 #include "playback/devices/tracktion_OutputDevice.h"
 
 #include "model/tracks/tracktion_TrackOutput.h"
@@ -577,9 +632,12 @@ namespace tracktion { inline namespace engine
 
 #include "model/export/tracktion_ArchiveFile.h"
 #include "model/export/tracktion_ExportJob.h"
+#include "model/export/tracktion_Archive.h"
 #include "model/export/tracktion_ReferencedMaterialList.h"
 #include "model/export/tracktion_Renderer.h"
 #include "model/export/tracktion_RenderManager.h"
+#include "model/export/tracktion_RenderSpecification.h"
+#include "model/export/tracktion_RenderQueue.h"
 
 #include "model/edit/tracktion_QuantisationType.h"
 
@@ -649,6 +707,7 @@ namespace tracktion { inline namespace engine
 #include "plugins/internal/tracktion_LevelMeter.h"
 #include "plugins/internal/tracktion_FreezePoint.h"
 #include "plugins/internal/tracktion_InsertPlugin.h"
+#include "plugins/internal/tracktion_ChannelMapperPlugin.h"
 #include "plugins/internal/tracktion_ReWirePlugin.h"
 #include "plugins/internal/tracktion_TextPlugin.h"
 

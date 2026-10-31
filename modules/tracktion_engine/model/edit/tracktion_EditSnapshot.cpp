@@ -8,20 +8,19 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 struct EditSnapshotList
 {
     EditSnapshotList() = default;
 
-    EditSnapshot::Ptr getEditSnapshot (ProjectItemID itemID)
+    EditSnapshot::Ptr getEditSnapshot (const juce::File& f)
     {
         const juce::ScopedLock sl (getLock());
 
         for (auto s : snapshots)
-            if (s->getID() == itemID)
+            if (s->getFile() == f)
                 return s;
 
         return {};
@@ -54,28 +53,28 @@ struct EditSnapshot::ListHolder
 };
 
 //==============================================================================
-EditSnapshot::Ptr EditSnapshot::getEditSnapshot (Engine& engine, ProjectItemID itemID)
+EditSnapshot::Ptr EditSnapshot::getEditSnapshot (Engine& engine, juce::File editFile)
 {
+    if (editFile == juce::File())
+        return {};
+
     juce::SharedResourcePointer<EditSnapshotList> list;
     const juce::ScopedLock sl (list->getLock());
 
-    if (itemID.isInvalid())
-        return {};
-
-    if (auto snapshot = list->getEditSnapshot (itemID))
+    if (auto snapshot = list->getEditSnapshot (editFile))
         return snapshot;
 
-    return new EditSnapshot (engine, itemID);
+    return new EditSnapshot (engine, editFile);
 }
 
 //==============================================================================
-EditSnapshot::EditSnapshot (Engine& e, ProjectItemID pid)
+EditSnapshot::EditSnapshot (Engine& e, juce::File f)
     : engine (e),
       listHolder (std::make_unique<ListHolder>()),
-      itemID (pid)
+      sourceFile (std::move (f))
 {
     listHolder->list->addSnapshot (*this);
-    refreshFromProjectManager();
+    refresh();
 }
 
 EditSnapshot::~EditSnapshot()
@@ -192,6 +191,11 @@ void EditSnapshot::refreshFromXml (const juce::XmlElement& xml,
     int audioTrackNameNumber = 1;
     addSubTracksRecursively (xml, audioTrackNameNumber);
     numAudioTracks = audioTracks.countNumberOfSetBits();
+
+    // The length isn't stored in the Edit XML so if no cached length was
+    // provided (e.g. there's no ProjectItem), fall back to the last clip end
+    if (length == 0.0)
+        length = maxClipEnd;
 }
 
 int EditSnapshot::audioToGlobalTrackIndex (int audioIndex) const
@@ -207,27 +211,25 @@ int EditSnapshot::audioToGlobalTrackIndex (int audioIndex) const
 }
 
 //==============================================================================
-void EditSnapshot::refreshFromProjectManager()
-{
-    if (auto pi = engine.getProjectManager().getProjectItem (itemID))
-        refreshFromProjectItem (pi);
-}
-
-void EditSnapshot::refreshFromProjectItem (ProjectItem::Ptr pi)
+void EditSnapshot::refresh()
 {
     clear();
 
-    if (pi == nullptr)
-        return;
+    auto pi = engine.getProjectManager().getProjectItem (sourceFile);
 
-    sourceFile = pi->getSourceFile();
+    if (pi)
+    {
+        project = pi->getProject();
+        sourceFile = pi->getSourceFile();
+    }
+
     auto newState = loadValueTree (sourceFile, true);
 
     if (! newState.hasType (IDs::EDIT))
         return;
 
-    name = pi->getName();
-    setState (newState, TimeDuration::fromSeconds (pi->getLength()));
+    name = pi ? pi->getName() : sourceFile.getFileNameWithoutExtension();
+    setState (newState, TimeDuration::fromSeconds (pi != nullptr ? pi->getLength() : 0.0));
     refreshFromState();
 }
 
@@ -249,9 +251,10 @@ void EditSnapshot::clear()
     trackNames.clearQuick();
     audioTracks.clear();
     trackIDs.clear();
-    editClipIDs.clear();
-    clipSourceIDs.clear();
+    editClipRefs.clear();
+    clipSourceRefs.clear();
     length = 0.0;
+    maxClipEnd = 0.0;
     markIn = 0.0;
     markOut = 0.0;
     tempo = 0.0;
@@ -266,18 +269,28 @@ void EditSnapshot::clear()
 void EditSnapshot::addEditClips (const juce::XmlElement& track)
 {
     for (auto clip : track.getChildIterator())
+    {
         if (clip->hasTagName (IDs::EDITCLIP))
-            editClipIDs.add (ProjectItemID (clip->getStringAttribute ("source")));
+        {
+            auto source = clip->getStringAttribute ("source");
+            auto file = ProjectItemRef (source).resolve (engine, project ? project->getDefaultDirectory()
+                                                                         : sourceFile.getParentDirectory());
+            editClipRefs.add (file);
+        }
+    }
 }
 
 void EditSnapshot::addClipSources (const juce::XmlElement& track)
 {
     for (auto clip : track.getChildIterator())
     {
-        auto sourceID = clip->getStringAttribute ("source");
+        auto source = clip->getStringAttribute ("source");
+        auto file = ProjectItemRef (source).resolve (engine, project ? project->getDefaultDirectory()
+                                                                     : sourceFile.getParentDirectory());
+        clipSourceRefs.add (file);
 
-        if (sourceID.isNotEmpty())
-            clipSourceIDs.add (ProjectItemID (sourceID));
+        maxClipEnd = std::max (maxClipEnd, clip->getDoubleAttribute (IDs::start)
+                                            + clip->getDoubleAttribute (IDs::length));
     }
 }
 
@@ -300,10 +313,13 @@ void EditSnapshot::addMarkers (const juce::XmlElement& track)
 
 static void addNestedEditObjects (EditSnapshot& baseEdit, juce::ReferenceCountedArray<EditSnapshot>& edits)
 {
-    edits.addIfNotAlreadyThere (&baseEdit);
+    if (edits.contains (&baseEdit))
+        return;
 
-    for (auto itemID : baseEdit.getEditClips())
-        if (auto ptr = EditSnapshot::getEditSnapshot (baseEdit.engine, itemID))
+    edits.add (&baseEdit);
+
+    for (auto editFile : baseEdit.getEditClips())
+        if (auto ptr = EditSnapshot::getEditSnapshot (baseEdit.engine, editFile))
             addNestedEditObjects (*ptr, edits);
 }
 
@@ -315,4 +331,4 @@ juce::ReferenceCountedArray<EditSnapshot> EditSnapshot::getNestedEditObjects()
     return result;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

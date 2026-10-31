@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class TracktionThumbnailCache;
 
@@ -22,7 +21,7 @@ public:
     AudioFileManager (Engine&);
     ~AudioFileManager();
 
-    AudioFile getAudioFile (ProjectItemID);
+    AudioFile getAudioFile (ProjectItemRef);
     AudioFileInfo getInfo (const AudioFile&);
 
     void checkFileForChangesAsync (const AudioFile&);
@@ -33,6 +32,19 @@ public:
 
     void releaseFile (const AudioFile&);
     void releaseAllFiles();
+
+    /// Register a memory buffer as a virtual audio file.
+    /// The buffer data must remain valid for the lifetime of the registration.
+    void registerMemoryBuffer (const std::string& filename,
+                               choc::buffer::InterleavedView<const float> buffer,
+                               double sampleRate);
+
+    /// Unregister a previously registered memory buffer.
+    void unregisterMemoryBuffer (const std::string& filename);
+
+    /// If the given AudioFile is backed by a registered memory buffer, creates a
+    /// AudioFormatReaderWithTimeout for it. Returns nullptr otherwise.
+    std::unique_ptr<AudioFormatReaderWithTimeout> createMemoryReader (const AudioFile&) const;
 
     juce::AudioThumbnailCache& getAudioThumbnailCache()     { return *thumbnailCache; }
 
@@ -67,4 +79,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioFileManager)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

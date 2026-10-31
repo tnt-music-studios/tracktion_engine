@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 TimeDuration RenderOptions::findEndAllowance (Edit& edit,
                                               juce::Array<EditItemID>* tracks,
@@ -108,7 +107,7 @@ void RenderOptions::loadFromUserSettings()
         rmsLevelDb        = storage.getProperty (SettingID::renderRMSLevelDb, -12.0);
         peakLevelDb       = storage.getProperty (SettingID::renderPeakLevelDb, 0.0);
         removeSilence     = storage.getProperty (SettingID::renderTrimSilence, false);
-        stereo            = storage.getProperty (SettingID::renderStereo, true);
+        channelConfigStr  = storage.getProperty (SettingID::renderChannelConfig, juce::String());
         sampleRate        = engine.getDeviceManager().getSampleRate();
         bitDepth          = storage.getProperty (SettingID::renderBits, 16);
         dither            = storage.getProperty (SettingID::renderDither, true);
@@ -124,7 +123,6 @@ void RenderOptions::loadFromUserSettings()
         bitDepth          = storage.getProperty (SettingID::editClipRenderBits, 16);
         dither            = storage.getProperty (SettingID::editClipRenderDither, true);
         realTime          = storage.getProperty (SettingID::editClipRealtime, false);
-        stereo            = storage.getProperty (SettingID::editClipRenderStereo, true);
         normalise         = storage.getProperty (SettingID::editClipRenderNormalise, false);
         adjustBasedOnRMS  = storage.getProperty (SettingID::editClipRenderRMS, false);
         rmsLevelDb        = storage.getProperty (SettingID::editClipRenderRMSLevelDb, -12.0);
@@ -158,7 +156,6 @@ void RenderOptions::saveToUserSettings()
         storage.setProperty (SettingID::editClipRenderBits, bitDepth.get());
         storage.setProperty (SettingID::editClipRenderDither, dither.get());
         storage.setProperty (SettingID::editClipRealtime, realTime.get());
-        storage.setProperty (SettingID::editClipRenderStereo, stereo.get());
         storage.setProperty (SettingID::editClipRenderNormalise, normalise.get());
         storage.setProperty (SettingID::editClipRenderRMS, adjustBasedOnRMS.get());
         storage.setProperty (SettingID::editClipRenderRMSLevelDb, rmsLevelDb.get());
@@ -177,7 +174,7 @@ void RenderOptions::saveToUserSettings()
         storage.setProperty (SettingID::renderPeakLevelDb, peakLevelDb.get());
         storage.setProperty (SettingID::renderTrimSilence, removeSilence.get());
         storage.setProperty (SettingID::renderSampRate, sampleRate.get());
-        storage.setProperty (SettingID::renderStereo, stereo.get());
+        storage.setProperty (SettingID::renderChannelConfig, channelConfigStr.get());
         storage.setProperty (SettingID::renderBits, bitDepth.get());
         storage.setProperty (SettingID::renderDither, dither.get());
         storage.setProperty (SettingID::quality, qualityIndex.get());
@@ -232,7 +229,7 @@ void RenderOptions::relinkCachedValues (juce::UndoManager* um)
     createMidiFile.referTo (state, IDs::renderCreateMidiFile, um, false);
     format.referTo (state, IDs::renderFormat, um, wav);
 
-    stereo.referTo (state, IDs::renderStereo, um, true);
+    channelConfigStr.referTo (state, IDs::renderChannelConfig, um, {});
 
     sampleRate.referTo (state, IDs::renderSampleRate, um, 44100.0);
     bitDepth.referTo (state, IDs::renderBitDepth, um, 32);
@@ -272,20 +269,22 @@ void RenderOptions::valueTreePropertyChanged (juce::ValueTree& v, const juce::Id
 }
 
 //==============================================================================
-static juce::StringPairArray getMetadata (Edit& edit)
+ChannelConfiguration RenderOptions::getChannelConfiguration() const
 {
-    juce::StringPairArray metadataList;
-    auto metadata = edit.getEditMetadata();
+    auto s = channelConfigStr.get().trim();
 
-    if (metadata.album.isNotEmpty())          metadataList.set ("id3album", metadata.album);
-    if (metadata.artist.isNotEmpty())         metadataList.set ("id3artist", metadata.artist);
-    if (metadata.comment.isNotEmpty())        metadataList.set ("id3comment", metadata.comment);
-    if (metadata.date.isNotEmpty())           metadataList.set ("id3date", metadata.date);
-    if (metadata.genre.isNotEmpty())          metadataList.set ("id3genre", metadata.genre);
-    if (metadata.title.isNotEmpty())          metadataList.set ("id3title", metadata.title);
-    if (metadata.trackNumber.isNotEmpty())    metadataList.set ("id3trackNumber", metadata.trackNumber);
+    if (s.isEmpty())
+        return {};
 
-    return metadataList;
+    return ChannelConfiguration::fromString (s.toStdString());
+}
+
+void RenderOptions::setChannelConfiguration (const ChannelConfiguration& config)
+{
+    if (config.isEmpty())
+        channelConfigStr = juce::String();
+    else
+        channelConfigStr = juce::String (config.toString());
 }
 
 Renderer::Parameters RenderOptions::getRenderParameters (Edit& edit)
@@ -309,8 +308,20 @@ Renderer::Parameters RenderOptions::getRenderParameters (Edit& edit, SelectionMa
     params.trimSilenceAtEnds        = removeSilence;
     params.shouldNormaliseByRMS     = adjustBasedOnRMS;
     params.normaliseToLevelDb       = (float) (adjustBasedOnRMS ? rmsLevelDb : peakLevelDb);
-    params.canRenderInMono          = true;
-    params.mustRenderInMono         = ! stereo;
+    auto cc = getChannelConfiguration();
+
+    if (! cc.isEmpty())
+    {
+        params.channelConfig        = cc;
+        params.canRenderInMono      = false;
+        params.mustRenderInMono     = cc.isMono();
+    }
+    else
+    {
+        params.canRenderInMono      = true;
+        params.mustRenderInMono     = false;
+    }
+
     params.usePlugins               = (params.createMidiFile || (isTrackRender() || isClipRender() || isEditClipRender())) ? usePlugins : true;
     params.useMasterPlugins         = isRender() ? false : ((params.createMidiFile || (isEditClipRender())) ? usePlugins : true);
     params.realTimeRender           = realTime;
@@ -377,7 +388,7 @@ Renderer::Parameters RenderOptions::getRenderParameters (Edit& edit, SelectionMa
         params.tracksToDo.setRange (0, allTracks.size(), true);
 
     if (addMetadata)
-        params.metadata = getMetadata (edit);
+        params.metadata = createTagMetadata (edit);
 
     if (addAcidMetadata)
         params.metadata.addArray (createAcidInfo (edit, params.time));
@@ -400,8 +411,22 @@ Renderer::Parameters RenderOptions::getRenderParameters (EditClip& clip)
     params.trimSilenceAtEnds        = removeSilence;
     params.shouldNormaliseByRMS     = adjustBasedOnRMS;
     params.normaliseToLevelDb       = (float) (adjustBasedOnRMS ? rmsLevelDb : peakLevelDb);
-    params.canRenderInMono          = true;
-    params.mustRenderInMono         = ! stereo;
+    {
+        auto cc = getChannelConfiguration();
+
+        if (! cc.isEmpty())
+        {
+            params.channelConfig        = cc;
+            params.canRenderInMono      = false;
+            params.mustRenderInMono     = cc.isMono();
+        }
+        else
+        {
+            params.canRenderInMono      = true;
+            params.mustRenderInMono     = false;
+        }
+    }
+
     params.usePlugins               = usePlugins;
     params.useMasterPlugins         = usePlugins;
     params.realTimeRender           = realTime;
@@ -440,8 +465,22 @@ Renderer::Parameters RenderOptions::getRenderParameters (MidiClip& clip)
     params.trimSilenceAtEnds        = removeSilence;
     params.shouldNormaliseByRMS     = adjustBasedOnRMS;
     params.normaliseToLevelDb       = (float) (adjustBasedOnRMS ? rmsLevelDb : peakLevelDb);
-    params.canRenderInMono          = true;
-    params.mustRenderInMono         = ! stereo;
+    {
+        auto cc = getChannelConfiguration();
+
+        if (! cc.isEmpty())
+        {
+            params.channelConfig        = cc;
+            params.canRenderInMono      = false;
+            params.mustRenderInMono     = cc.isMono();
+        }
+        else
+        {
+            params.canRenderInMono      = true;
+            params.mustRenderInMono     = false;
+        }
+    }
+
     params.usePlugins               = true;
     params.useMasterPlugins         = false;
     params.realTimeRender           = realTime;
@@ -598,7 +637,7 @@ Clip::Ptr RenderOptions::applyRenderToEdit (Edit& edit,
             }
         }
 
-        newClip = trackToUse->insertWaveClip (newClipName, projectItem->getID(), { insertPos, {} }, false);
+        newClip = trackToUse->insertWaveClip (newClipName, projectItem->getProjectItemRef(), { insertPos, {} }, false);
         if (auto ac = dynamic_cast<WaveAudioClip*> (newClip.get()))
         {
             // We only want to enable auto tempo is the rendered clip has tempo information
@@ -693,7 +732,7 @@ void RenderOptions::setToDefault()
 
     createMidiFile           = false;
     format                   = wav;
-    stereo                   = true;
+    channelConfigStr         = juce::String();
     sampleRate               = 44100.0;
     bitDepth                 = 32;
     qualityIndex             = 5;
@@ -726,7 +765,15 @@ void RenderOptions::updateLastUsedRenderPath (RenderOptions& renderOptions, cons
     auto lastEditID = storage.getProperty (SettingID::lastEditRender).toString();
 
     if (itemID == lastEditID)
-        renderOptions.destFile = storage.getDefaultLoadSaveDirectory ("exportRender");
+    {
+        // Track/clip renders and whole-edit exports remember their paths separately
+        // so a render can't redirect an export away from its category default dir
+        auto lastPath = storage.getDefaultLoadSaveDirectory (renderOptions.isRender() ? "renderPath"
+                                                                                      : "exportPath");
+
+        if (lastPath.existsAsFile())
+            renderOptions.destFile = lastPath;
+    }
 
     storage.setProperty (SettingID::lastEditRender, itemID);
 }
@@ -736,12 +783,12 @@ std::unique_ptr<RenderOptions> RenderOptions::forGeneralExporter (Edit& edit)
     std::unique_ptr<RenderOptions> ro (new RenderOptions (edit.engine));
     ro->setToDefault();
 
-    updateLastUsedRenderPath (*ro, edit.getProjectItemID().toString());
+    updateLastUsedRenderPath (*ro, edit.getProjectItemRef().toString());
 
     for (auto t : getAllTracks (edit))
         ro->tracks.add (t->itemID);
 
-    ro->addMetadata = getMetadata (edit).size() != 0;
+    ro->addMetadata = hasTagMetadata (edit);
     ro->updateDefaultFilename (&edit);
     ro->updateHash();
 
@@ -758,7 +805,7 @@ std::unique_ptr<RenderOptions> RenderOptions::forTrackRender (juce::Array<Track*
         std::unique_ptr<RenderOptions> ro (new RenderOptions (edit.engine));
         ro->setToDefault();
         ro->type = RenderType::track;
-        updateLastUsedRenderPath (*ro, edit.getProjectItemID().toString());
+        updateLastUsedRenderPath (*ro, edit.getProjectItemRef().toString());
 
         for (auto t : tracks)
             ro->tracks.add (t->itemID);
@@ -781,7 +828,6 @@ std::unique_ptr<RenderOptions> RenderOptions::forClipRender (juce::Array<Clip*> 
 
         std::unique_ptr<RenderOptions> ro (new RenderOptions (edit.engine));
         ro->setToDefault();
-        updateLastUsedRenderPath (*ro, edit.getProjectItemID().toString());
 
         ro->allowedClips = clips;
         bool areAllClipsMono = true;
@@ -812,7 +858,10 @@ std::unique_ptr<RenderOptions> RenderOptions::forClipRender (juce::Array<Clip*> 
         ro->type = midiNotes ? RenderType::midi
                              : RenderType::clip;
 
-        ro->stereo            = ! areAllClipsMono;
+        // Must be called after the type has been set so the right last-path key is used
+        updateLastUsedRenderPath (*ro, edit.getProjectItemRef().toString());
+
+        ro->setChannelConfiguration (areAllClipsMono ? ChannelConfiguration::mono() : ChannelConfiguration::stereo());
         ro->selectedClips     = false;
         ro->endAllowance      = ro->usePlugins ? findEndAllowance (edit, &ro->tracks, &clips) : TimeDuration();
         ro->removeSilence     = midiNotes;
@@ -858,7 +907,7 @@ RenderOptions::~RenderOptions()
     state.removeListener (this);
 
     if (! isEditClipRender())
-        engine.getPropertyStorage().setDefaultLoadSaveDirectory ("exportRender", destFile);
+        engine.getPropertyStorage().setDefaultLoadSaveDirectory (isRender() ? "renderPath" : "exportPath", destFile);
 }
 
 void RenderOptions::setUINeedsRefresh()
@@ -972,96 +1021,63 @@ void RenderOptions::setSelected (bool onlySelectedTrackAndClips)
     selectedClips = onlySelectedTrackAndClips;
 }
 
-void RenderOptions::setFilename (juce::String value, bool canPromptToOverwriteExisting)
+void RenderOptions::setFilename (juce::String value, bool canPromptToOverwriteExisting,
+                                 std::function<void()> onComplete)
 {
     juce::RecentlyOpenedFilesList recent;
     auto recentList = engine.getPropertyStorage().getProperty (SettingID::renderRecentFilesList).toString();
     recent.restoreFromString (recentList);
 
-    juce::File f;
+    // The "$browse" magic string is no longer handled here — UI code should
+    // resolve the file path before calling setFilename().
+    jassert (! value.startsWithIgnoreCase ("$browse"));
 
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    if (value.startsWithIgnoreCase ("$browse"))
+    auto f = juce::File (value);
+
+    auto finishSetFilename = [this, f, recent, recentList, callback = std::move (onComplete)] () mutable
     {
-        enum
+        destFile = f.getFullPathName();
+        updateDefaultFilename (nullptr);
+
+        if (destFile != juce::File())
         {
-            cancel = 0,
-            browse,
-            projectDefault,
-            recentOffset
-        };
+            recent.addFile (destFile);
+            auto newRecentList = recent.toString();
 
-        juce::PopupMenu m, m2;
-
-        m.addItem (browse, TRANS("Browse") + "...");
-        m.addItem (projectDefault, TRANS("Set to project default"));
-
-        int i = recentOffset;
-
-        for (auto& s : recent.getAllFilenames())
-            m2.addItem (i++, s);
-
-        if (recent.getNumFiles() > 0)
-            m.addSubMenu (TRANS("Recent"), m2);
-
-        auto res = m.show();
-
-        if (res == cancel)
-            return;
-
-        if (res == browse)
-        {
-            juce::FileChooser chooser (TRANS("Select the file to use"), destFile, "*" + getCurrentFileExtension());
-
-            if (! chooser.browseForFileToSave (false))
-                return;
-
-            f = chooser.getResult();
+            if (recentList != newRecentList)
+                engine.getPropertyStorage().setProperty (SettingID::renderRecentFilesList, newRecentList);
         }
-        else if (res == projectDefault)
-        {
-            f = juce::File();
-        }
-        else
-        {
-            f = recent.getAllFilenames()[res - recentOffset];
-        }
-    }
-    else
-   #endif
+
+        if (callback != nullptr)
+            callback();
+    };
+
+    if (f.existsAsFile() && canPromptToOverwriteExisting)
     {
-        f = juce::File (value);
-    }
-
-    if (f.existsAsFile()
-        #if JUCE_MODAL_LOOPS_PERMITTED
-          && canPromptToOverwriteExisting
-          && engine.getUIBehaviour().showOkCancelAlertBox (TRANS("File Already Exists"),
+        engine.getUIBehaviour().showOkCancelAlertBoxAsync (TRANS("File Already Exists"),
                                                            TRANS("The file you have chosen already exists, do you want to delete it?")
                                                              + "\n\n"
                                                              + TRANS("If you choose to cancel, a non existent file name will be chosen automatically.")
                                                              + "\n"
-                                                             + "(" + TRANS("This operation can't be undone") + ")")
-         #endif
-        )
-    {
-        AudioFile (engine, f).deleteFile();
+                                                             + "(" + TRANS("This operation can't be undone") + ")",
+                                                           TRANS("OK"),
+                                                           TRANS("Cancel"),
+                                                           [this, f, finishSetFilename] (bool okPressed) mutable
+                                                           {
+                                                               if (okPressed)
+                                                               {
+                                                                   AudioFile (engine, f).deleteFile();
 
-        if (f.existsAsFile())
-            f.moveToTrash();
+                                                                   if (f.existsAsFile())
+                                                                       f.moveToTrash();
+                                                               }
+
+                                                               finishSetFilename();
+                                                           });
+        return;
     }
 
-    destFile = f.getFullPathName();
-    updateDefaultFilename (nullptr);
-
-    if (destFile != juce::File())
-    {
-        recent.addFile (destFile);
-        auto newRecentList = recent.toString();
-
-        if (recentList != newRecentList)
-            engine.getPropertyStorage().setProperty (SettingID::renderRecentFilesList, newRecentList);
-    }
+    finishSetFilename();
 }
 
 //==============================================================================
@@ -1146,7 +1162,7 @@ void RenderOptions::updateHash()
     hash = (tracks.isEmpty() ? 0 : getTracksHash())
            ^ (((HashCode) createMidiFile)        << 0)
            ^ (((HashCode) format)                << 1)
-           ^ (((HashCode) stereo)                << 2)
+           ^ ((HashCode) channelConfigStr.get().hashCode())
            ^ (((HashCode) sampleRate)            << 3)
            ^ (((HashCode) bitDepth)              << 4)
            ^ (((HashCode) qualityIndex)          << 5)
@@ -1230,7 +1246,11 @@ void RenderOptions::updateDefaultFilename (Edit* edit)
                                                           : ProjectItem::Category::exports;
         juce::String nameStem;
 
-        if (selectedTracks || selectedClips)
+        // Keep a filename the user has typed without the correct extension
+        if (destFile != juce::File() && ! destFile.isDirectory() && ! destFile.existsAsFile())
+            nameStem = destFile.getFileNameWithoutExtension().trim();
+
+        if (nameStem.isEmpty() && (selectedTracks || selectedClips))
         {
             if (auto sm = engine.getUIBehaviour().getCurrentlyFocusedSelectionManager())
             {
@@ -1260,8 +1280,18 @@ void RenderOptions::updateDefaultFilename (Edit* edit)
             }
         }
 
-        const auto dir = destFile.existsAsFile() ? destFile.getParentDirectory()
-                                                 : engine.getPropertyStorage().getDefaultLoadSaveDirectory (category);
+        // Prefer the directory the user has chosen or typed, only falling back to
+        // the category default when the current path doesn't point anywhere usable
+        juce::File dir;
+
+        if (destFile.isDirectory())
+            dir = destFile;
+        else if (destFile.existsAsFile())
+            dir = destFile.getParentDirectory();
+        else if (destFile != juce::File() && destFile.getParentDirectory().isDirectory())
+            dir = destFile.getParentDirectory();
+        else
+            dir = engine.getPropertyStorage().getDefaultLoadSaveDirectory (category);
 
         destFile = dir.getChildFile (juce::File::createLegalFileName (nameStem)
                                        + getCurrentFileExtension());
@@ -1281,4 +1311,4 @@ juce::String RenderOptions::getCurrentFileExtension()
     return {};
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

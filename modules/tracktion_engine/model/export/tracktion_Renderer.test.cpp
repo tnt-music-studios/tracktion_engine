@@ -13,6 +13,7 @@
 #include "../../../3rd_party/doctest/tracktion_doctest.hpp"
 #include "../../utilities/tracktion_TestUtilities.h"
 #include "../../../tracktion_graph/tracktion_graph/tracktion_TestUtilities.h"
+#include "../../testing/tracktion_EnginePlayer.h"
 
 namespace tracktion::inline engine
 {
@@ -65,6 +66,656 @@ TEST_SUITE("tracktion_engine")
         CHECK (thumbnail->getNumSamplesFinished() >= toSamples (fileLength, 44100.0));
         CHECK (thumbnail->getTotalLength() >= fileLength.inSeconds());
     }
+
+    TEST_CASE ("Renderer multichannel export")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        // Create a 4-channel source with unique constant values per channel
+        // so we can verify both channel count and ordering in the output.
+        const choc::buffer::ChannelCount numSourceChannels = 4;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.1f;  // ch0=0.1, ch1=0.2, ch2=0.3, ch3=0.4
+
+        const juce::File virtualFile ("/memory/multichannel-test.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        // Helper: render an edit and return the result buffer
+        auto renderEdit = [&] (Edit& edit, ChannelConfiguration channelConfig, bool mustMono = false)
+            -> std::optional<juce::AudioBuffer<float>>
+        {
+            juce::TemporaryFile destFile (".wav");
+            Renderer::Parameters params (edit);
+            params.destFile = destFile.getFile();
+            params.time = params.time.withLength (clipLength);
+            params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+            params.canRenderInMono = false;
+            params.mustRenderInMono = mustMono;
+
+            if (! channelConfig.isEmpty())
+                params.channelConfig = channelConfig;
+
+            std::atomic<bool> callbackFinished { false };
+            bool renderSucceeded = false;
+
+            auto handle = EditRenderer::render (std::move (params),
+                                                [&] (auto res)
+                                                {
+                                                    renderSucceeded = res.has_value();
+                                                    callbackFinished = true;
+                                                });
+
+            test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+
+            if (! renderSucceeded)
+                return {};
+
+            return test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        };
+
+        // Helper: create an edit with the multichannel clip, all channels active
+        auto createEditWithClip = [&]
+        {
+            auto edit = test_utilities::createTestEdit (engine);
+            auto track = getAudioTracks (*edit)[0];
+            auto clip = insertWaveClip (*track, {}, virtualFile,
+                                        { .time = { 0_tp, clipLength } },
+                                        DeleteExistingClips::no);
+            REQUIRE (clip != nullptr);
+            clip->setActiveChannelConfiguration (ChannelConfiguration::discreteChannels ((int) numSourceChannels));
+            return edit;
+        };
+
+        SUBCASE ("auto-detect from graph preserves channel count and content")
+        {
+            auto edit = createEditWithClip();
+            auto buffer = renderEdit (*edit, {});
+            REQUIRE (buffer.has_value());
+            CHECK_EQ (buffer->getNumChannels(), (int) numSourceChannels);
+
+            // Verify each channel has the expected content
+            for (int ch = 0; ch < (int) numSourceChannels; ++ch)
+            {
+                float expected = (float) (ch + 1) * 0.1f;
+                CHECK (buffer->getRMSLevel (ch, 0, buffer->getNumSamples()) == doctest::Approx (expected).epsilon (0.01));
+            }
+        }
+
+        SUBCASE ("explicit channelConfig with reversed order")
+        {
+            auto edit = createEditWithClip();
+
+            // Request output in reversed order: ch3, ch2, ch1, ch0
+            ChannelConfiguration reversedConfig;
+            reversedConfig.addChannel (ChannelIndex::createMono (3));
+            reversedConfig.addChannel (ChannelIndex::createMono (2));
+            reversedConfig.addChannel (ChannelIndex::createMono (1));
+            reversedConfig.addChannel (ChannelIndex::createMono (0));
+
+            auto buffer = renderEdit (*edit, reversedConfig);
+            REQUIRE (buffer.has_value());
+            CHECK_EQ (buffer->getNumChannels(), 4);
+
+            // Output channel 0 should have graph channel 3's content (0.4)
+            CHECK (buffer->getRMSLevel (0, 0, buffer->getNumSamples()) == doctest::Approx (0.4f).epsilon (0.01));
+            // Output channel 1 should have graph channel 2's content (0.3)
+            CHECK (buffer->getRMSLevel (1, 0, buffer->getNumSamples()) == doctest::Approx (0.3f).epsilon (0.01));
+            // Output channel 2 should have graph channel 1's content (0.2)
+            CHECK (buffer->getRMSLevel (2, 0, buffer->getNumSamples()) == doctest::Approx (0.2f).epsilon (0.01));
+            // Output channel 3 should have graph channel 0's content (0.1)
+            CHECK (buffer->getRMSLevel (3, 0, buffer->getNumSamples()) == doctest::Approx (0.1f).epsilon (0.01));
+        }
+
+        SUBCASE ("fewer output channels than source")
+        {
+            auto edit = createEditWithClip();
+            auto buffer = renderEdit (*edit, ChannelConfiguration::discreteChannels (2));
+            REQUIRE (buffer.has_value());
+            CHECK_EQ (buffer->getNumChannels(), 2);
+
+            // Should have first two channels' content
+            CHECK (buffer->getRMSLevel (0, 0, buffer->getNumSamples()) == doctest::Approx (0.1f).epsilon (0.01));
+            CHECK (buffer->getRMSLevel (1, 0, buffer->getNumSamples()) == doctest::Approx (0.2f).epsilon (0.01));
+        }
+
+        SUBCASE ("mustRenderInMono overrides multichannel")
+        {
+            auto edit = createEditWithClip();
+            auto buffer = renderEdit (*edit, {}, true);
+            REQUIRE (buffer.has_value());
+            CHECK_EQ (buffer->getNumChannels(), 1);
+        }
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Renderer 7.1 surround export")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        const choc::buffer::ChannelCount numSourceChannels = 8;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.05f;
+
+        const juce::File virtualFile ("/memory/7.1-test.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+        auto clip = insertWaveClip (*track, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+
+        // Render with explicit 7.1 channel config
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.time = params.time.withLength (clipLength);
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.channelConfig = ChannelConfiguration::surround7_1();
+        params.canRenderInMono = false;
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (auto res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        CHECK (renderSucceeded);
+
+        auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (buffer.has_value());
+        CHECK_EQ (buffer->getNumChannels(), 8);
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Renderer auto-detects channel count from edit")
+    {
+        // When channelConfig is empty ("From Edit"), the renderer should use
+        // the graph's actual channel count, not default to stereo.
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        const choc::buffer::ChannelCount numSourceChannels = 3;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.1f;
+
+        const juce::File virtualFile ("/memory/3ch-auto-detect.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+        auto clip = insertWaveClip (*track, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+        clip->setActiveChannelConfiguration (ChannelConfiguration::discreteChannels ((int) numSourceChannels));
+
+        // Use RenderOptions with empty channel config = "From Edit" auto-detect
+        auto renderOptions = RenderOptions::forGeneralExporter (*edit);
+        renderOptions->setChannelConfiguration ({});  // "From Edit"
+
+        juce::TemporaryFile destFile (".wav");
+        auto params = renderOptions->getRenderParameters (*edit);
+        params.destFile = destFile.getFile();
+        params.time = params.time.withLength (clipLength);
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+
+        std::atomic<bool> callbackFinished { false };
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&callbackFinished] (auto res)
+                                            {
+                                                CHECK (res);
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        CHECK (callbackFinished);
+
+        auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (buffer.has_value());
+        CHECK_EQ (buffer->getNumChannels(), (int) numSourceChannels);
+
+        // Verify per-channel content is preserved
+        for (int ch = 0; ch < (int) numSourceChannels; ++ch)
+        {
+            float expected = (float) (ch + 1) * 0.1f;
+            CHECK (buffer->getRMSLevel (ch, 0, buffer->getNumSamples()) == doctest::Approx (expected).epsilon (0.01));
+        }
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Renderer memory buffer clip")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        const choc::buffer::ChannelCount numChannels = 2;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 2_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        // Fill a stereo buffer with a constant value so we can verify it survives rendering
+        const float testValue = 0.5f;
+        choc::buffer::InterleavedBuffer<float> buffer (numChannels, numFrames);
+
+        for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+            for (choc::buffer::ChannelCount ch = 0; ch < numChannels; ++ch)
+                buffer.getSample (ch, f) = testValue;
+
+        // Register with a key that matches the juce::File path we'll give the clip
+        const juce::File virtualFile ("/memory/test-buffer.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, buffer.getView(), sampleRate);
+
+        // Create an edit with one audio track and insert a clip referencing the memory buffer
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+        auto clip = insertWaveClip (*track, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+
+        // Render the edit to a file
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.time = params.time.withLength (clipLength);
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (auto res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        CHECK (renderSucceeded);
+
+        // Read back the rendered file and verify samples match the source buffer
+        auto rendered = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (rendered.has_value());
+        CHECK_EQ (rendered->getNumChannels(), static_cast<int> (numChannels));
+        CHECK_EQ (rendered->getNumSamples(), static_cast<int> (numFrames));
+
+        for (int ch = 0; ch < rendered->getNumChannels(); ++ch)
+            CHECK (rendered->getRMSLevel (ch, 0, rendered->getNumSamples()) == doctest::Approx (testValue).epsilon (0.01));
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Multichannel clip through stereo plugin preserves passthrough channels")
+    {
+        // Verifies the full signal path: 6-channel clip → stereo VolumeAndPan plugin → 6-channel output.
+        // Channels 0-1 should be processed by the plugin, channels 2-5 should pass through unchanged.
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        const choc::buffer::ChannelCount numSourceChannels = 6;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.1f;
+
+        const juce::File virtualFile ("/memory/6ch-plugin-passthrough.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+        auto clip = insertWaveClip (*track, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+        clip->setActiveChannelConfiguration (ChannelConfiguration::discreteChannels ((int) numSourceChannels));
+
+        // The track already has a VolumeAndPanPlugin at unity gain.
+        // Render and verify all 6 channels survive.
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.time = params.time.withLength (clipLength);
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.canRenderInMono = false;
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (auto res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        CHECK (renderSucceeded);
+
+        auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (buffer.has_value());
+        CHECK_EQ (buffer->getNumChannels(), (int) numSourceChannels);
+
+        // All 6 channels should have their original content
+        for (int ch = 0; ch < (int) numSourceChannels; ++ch)
+        {
+            float expected = (float) (ch + 1) * 0.1f;
+            auto rms = buffer->getRMSLevel (ch, 0, buffer->getNumSamples());
+            CHECK (rms == doctest::Approx (expected).epsilon (0.02));
+        }
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Multichannel clip with channel subset selection")
+    {
+        // Verifies selecting a subset of channels from a multichannel clip.
+        // Select only first 2 channels from a 4-channel source → expect 2-channel output.
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        const choc::buffer::ChannelCount numSourceChannels = 4;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.1f;
+
+        const juce::File virtualFile ("/memory/4ch-channel-selection.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+        auto clip = insertWaveClip (*track, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+
+        // Select only first 2 channels out of 4
+        clip->setActiveChannelConfiguration (ChannelConfiguration::discreteChannels (2));
+
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.time = params.time.withLength (clipLength);
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.canRenderInMono = false;
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (auto res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        CHECK (renderSucceeded);
+
+        auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (buffer.has_value());
+
+        // With 2 active channels, output should have 2 channels
+        CHECK_EQ (buffer->getNumChannels(), 2);
+
+        // Output should contain source channels 0 and 1 content
+        CHECK (buffer->getRMSLevel (0, 0, buffer->getNumSamples()) == doctest::Approx (0.1f).epsilon (0.02));
+        CHECK (buffer->getRMSLevel (1, 0, buffer->getNumSamples()) == doctest::Approx (0.2f).epsilon (0.02));
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Multichannel submix routing preserves channels")
+    {
+        // Verifies multichannel signal flows through track-to-track routing:
+        // Track 1 (4ch clip) → output to Track 2 → render → 4 channels preserved.
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        const choc::buffer::ChannelCount numSourceChannels = 4;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.1f;
+
+        const juce::File virtualFile ("/memory/4ch-submix.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        auto edit = test_utilities::createTestEdit (engine, 2);
+        auto track1 = getAudioTracks (*edit)[0];
+        auto track2 = getAudioTracks (*edit)[1];
+
+        auto clip = insertWaveClip (*track1, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+        clip->setActiveChannelConfiguration (ChannelConfiguration::discreteChannels ((int) numSourceChannels));
+
+        // Route track1 → track2
+        track1->getOutput().setOutputToTrack (track2);
+
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.time = params.time.withLength (clipLength);
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.canRenderInMono = false;
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (auto res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        CHECK (renderSucceeded);
+
+        auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (buffer.has_value());
+        CHECK_EQ (buffer->getNumChannels(), (int) numSourceChannels);
+
+        for (int ch = 0; ch < (int) numSourceChannels; ++ch)
+        {
+            float expected = (float) (ch + 1) * 0.1f;
+            CHECK (buffer->getRMSLevel (ch, 0, buffer->getNumSamples()) == doctest::Approx (expected).epsilon (0.02));
+        }
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Multichannel aux send and return")
+    {
+        // Verifies multichannel signal flows through aux send/return:
+        // Track 1 has a 4ch clip + aux send. Track 2 has aux return.
+        // Rendered output should contain the 4ch signal from both tracks.
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        const choc::buffer::ChannelCount numSourceChannels = 4;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.1f;
+
+        const juce::File virtualFile ("/memory/4ch-aux-send.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        auto edit = test_utilities::createTestEdit (engine, 2);
+        edit->getMasterVolumePlugin()->setVolumeDb (0.0f);
+
+        auto sourceTrack = getAudioTracks (*edit)[0];
+        auto returnTrack = getAudioTracks (*edit)[1];
+
+        auto clip = insertWaveClip (*sourceTrack, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+        clip->setActiveChannelConfiguration (ChannelConfiguration::discreteChannels ((int) numSourceChannels));
+
+        // Add aux send on source track and aux return on return track
+        sourceTrack->pluginList.insertPlugin (edit->getPluginCache().createNewPlugin (AuxSendPlugin::xmlTypeName, {}), 0, nullptr);
+        returnTrack->pluginList.insertPlugin (edit->getPluginCache().createNewPlugin (AuxReturnPlugin::xmlTypeName, {}), 0, nullptr);
+
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.time = params.time.withLength (clipLength);
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.canRenderInMono = false;
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (auto res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        CHECK (renderSucceeded);
+
+        auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (buffer.has_value());
+
+        // Output should have at least 4 channels (source + return both contribute)
+        CHECK_GE (buffer->getNumChannels(), (int) numSourceChannels);
+
+        // Each channel should have signal (source direct + aux return = doubled amplitude)
+        for (int ch = 0; ch < (int) numSourceChannels; ++ch)
+        {
+            auto rms = buffer->getRMSLevel (ch, 0, buffer->getNumSamples());
+            CHECK_GT (rms, 0.0f);
+        }
+
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Renderer LUFS normalisation measures the wrapped file")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+
+        // 997Hz over a 3s region is a whole number of cycles, so the folded
+        // tail lands in phase and doubles the level of the first 2s. Measuring
+        // during the render pass instead of after the fold would miss that.
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 5.0, 1, 997.0f);
+        auto clip = insertWaveClip (*getAudioTracks (*edit)[0], {}, sinFile->getFile(), { .time = { 0_tp, 5_tp } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+        clip->setGainDB (-12.0f);   // leaves headroom for the folded tail to double the level
+
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.bitDepth = 24;
+        params.time = { 0_tp, 3_tp };
+        params.endAllowance = 2_td;
+        params.wrapRemainder = true;
+        params.shouldNormaliseByLUFS = true;
+        params.normaliseToLevelDb = -14.0f;
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (auto res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        test_utilities::runDispatchLoopUntilTrue (callbackFinished);
+        REQUIRE (renderSucceeded);
+
+        auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+        REQUIRE (buffer.has_value());
+        CHECK_EQ (buffer->getNumSamples(), toSamples (3_td, 44100.0));
+
+        // The tail really was folded on: the first 2s sit ~6dB above the last 1s
+        const auto foldedLevel = buffer->getRMSLevel (0, 0, (int) toSamples (2_td, 44100.0));
+        const auto plainLevel = buffer->getRMSLevel (0, (int) toSamples (2_td, 44100.0),
+                                                     (int) toSamples (1_td, 44100.0));
+        CHECK_EQ (foldedLevel, doctest::Approx (plainLevel * 2.0f).epsilon (0.05));
+
+        LoudnessMeter meter;
+        meter.prepare (44100.0, buffer->getNumChannels(), 8192);
+        meter.process (buffer->getArrayOfReadPointers(), buffer->getNumChannels(), buffer->getNumSamples());
+        meter.flush();
+
+        auto readings = meter.getReadings();
+        REQUIRE (readings.integratedValid);
+        CHECK_LT (std::abs (readings.integratedLufs - -14.0f), 0.2f);
+    }
+
 }
 
 #endif
@@ -72,87 +723,808 @@ TEST_SUITE("tracktion_engine")
 
 #if ENGINE_UNIT_TESTS_FREEZE
 
-//==============================================================================
-//==============================================================================
-class TrackFreezeTests  : public juce::UnitTest
+namespace freeze_test_helpers
 {
-public:
-    TrackFreezeTests()
-        : juce::UnitTest ("Track Freeze", "tracktion_engine")
+    /** Builds and runs the live (non-render) graph, which is the only one that plays freeze files,
+        and returns the RMS of the second half so any file cache warm-up at the start is ignored.
+    */
+    inline float getLivePlaybackRMS (Edit& edit, TimeDuration length)
     {
+        graph::test_utilities::TestSetup ts;
+        ts.sampleRate = 44100.0;
+        ts.blockSize = 256;
+
+        tracktion::graph::PlayHead playHead;
+        tracktion::graph::PlayHeadState playHeadState { playHead };
+        ProcessState processState { playHeadState, edit.tempoSequence };
+
+        CreateNodeParams params { processState };
+        params.sampleRate = ts.sampleRate;
+        params.blockSize = ts.blockSize;
+        params.forRendering = false;
+
+        auto node = createNodeForEdit (edit, params);
+        REQUIRE (node != nullptr);
+
+        graph::test_utilities::TestProcess<TracktionNodePlayer> testContext (std::make_unique<TracktionNodePlayer> (std::move (node), processState, ts.sampleRate, ts.blockSize,
+                                                                                                                    graph::getPoolCreatorFunction (graph::ThreadPoolStrategy::realTime)),
+                                                                             ts, 2, length.inSeconds(), true);
+        testContext.setPlayHead (&playHeadState.playHead);
+        playHeadState.playHead.playSyncedToRange ({});
+        auto result = testContext.processAll();
+
+        const auto halfLength = result->buffer.getNumSamples() / 2;
+        return result->buffer.getRMSLevel (0, halfLength, result->buffer.getNumSamples() - halfLength);
     }
 
-    void runTest() override
+    /** Plays the Edit through the live device graph (as the app does) and returns the RMS of
+        the second half of channel 0, so any file cache warm-up at the start is ignored.
+    */
+    inline float getDevicePlaybackRMS (test_utilities::EnginePlayer& player, Edit& edit, TimeDuration length)
+    {
+        auto& tc = edit.getTransport();
+        tc.freePlaybackContext();
+        tc.setPosition (0_tp);
+        tc.play (false);
+
+        auto buffer = player.process (toSamples (length, player.getParams().sampleRate));
+        tc.stop (false, true);
+
+        const auto half = buffer.getNumSamples() / 2;
+        return buffer.getRMSLevel (0, half, buffer.getNumSamples() - half);
+    }
+
+    /** Mimics a multi-out wrapper: one rack wrapping a synth with two stereo outputs, an instance
+        on the first track with the MIDI playing outputs 1/2 and an instance on the second pulling 3/4.
+    */
+    inline std::unique_ptr<Edit> createMultiOutRackEdit (Engine& engine)
+    {
+        auto edit = test_utilities::createTestEdit (engine, 2, Edit::EditRole::forEditing);
+        edit->getMasterVolumePlugin()->setVolumeDb (0.0f);
+        auto tracks = getAudioTracks (*edit);
+
+        auto synth = edit->getPluginCache().createNewPlugin (FourOscPlugin::xmlTypeName, {});
+        REQUIRE (synth != nullptr);
+
+        Plugin::Array plugins;
+        plugins.add (synth);
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        REQUIRE (rackType != nullptr);
+
+        for (int pin : { 3, 4 })
+        {
+            rackType->addOutput (-1, "Output " + juce::String (pin));
+            rackType->addConnection (synth->itemID, pin - 2, {}, pin);
+        }
+
+        tracks[0]->pluginList.insertPlugin (RackInstance::create (*rackType), 0);
+        tracks[0]->insertMIDIClip ({ 0_tp, 2_tp }, nullptr)->getSequence()
+            .addNote (57, BeatPosition(), BeatDuration::fromBeats (4.0), 127, 0, nullptr);
+
+        auto secondOutput = dynamic_cast<RackInstance*> (tracks[1]->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+        REQUIRE (secondOutput != nullptr);
+        secondOutput->setInputMapping (0, 3);
+        secondOutput->setInputMapping (1, 4);
+        secondOutput->setOutputMapping (0, 3);
+        secondOutput->setOutputMapping (1, 4);
+
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+        return edit;
+    }
+
+    /** Plays the track live unfrozen, freezes it, plays it again and checks the two match. */
+    inline void checkFrozenTrackMatchesUnfrozenPlayback (Edit& edit, AudioTrack& track)
+    {
+        edit.getMasterVolumePlugin()->setVolumeDb (0.0f);
+        const auto length = TimeDuration::fromSeconds (2.0);
+
+        // Control: the unfrozen track is audible when played live, so a silent frozen track
+        // is down to the freeze rather than the test harness
+        const auto unfrozenRMS = getLivePlaybackRMS (edit, length);
+        REQUIRE_GT (unfrozenRMS, 0.05f);
+
+        REQUIRE (track.setFrozen (true, AudioTrack::individualFreeze).wasOk());
+        REQUIRE (track.isFrozen (AudioTrack::individualFreeze));
+        REQUIRE (TemporaryFileManager::getFreezeFileForTrack (track).existsAsFile());
+
+        const auto frozenRMS = getLivePlaybackRMS (edit, length);
+        CHECK_MESSAGE (std::abs (frozenRMS - unfrozenRMS) <= unfrozenRMS * 0.1f,
+                       ("Frozen RMS " + juce::String (frozenRMS, 4) + " vs unfrozen RMS " + juce::String (unfrozenRMS, 4)).toStdString());
+
+        track.unfreeze (AudioTrack::individualFreeze);
+        edit.engine.getAudioFileManager().releaseAllFiles();
+        edit.getTempDirectory (false).deleteRecursively();
+    }
+}
+
+TEST_SUITE ("tracktion_engine")
+{
+    TEST_CASE ("Track Freeze: End allowance")
     {
         auto& engine = *Engine::getEngines()[0];
 
-        beginTest ("End allowance");
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        // Create a track with a plugin with end allowance
+        auto synth = dynamic_cast<FourOscPlugin*> (edit->getPluginCache().createNewPlugin (FourOscPlugin::xmlTypeName, {}).get());
+        static auto organPatch = "<PLUGIN type=\"4osc\" id=\"1069\" enabled=\"1\" filterType=\"1\" presetName=\"4OSC: Organ\" filterFreq=\"127.0\" ampAttack=\"0.60000002384185791016\" ampDecay=\"10.0\" ampSustain=\"100.0\" ampRelease=\"0.40000000596046447754\" waveShape1=\"4\" tune2=\"-24.0\" waveShape2=\"4\"> <MODMATRIX/> </PLUGIN>";
+
+        if (auto e = juce::parseXML (organPatch))
+            if (auto v = juce::ValueTree::fromXml (*e); v.isValid())
+                synth->restorePluginStateFromValueTree (v);
+
+        const auto tailLength = synth->getTailLength();
+        CHECK_GT (tailLength, 0.0);
+
+        track->pluginList.insertPlugin (*synth, 0, nullptr);
+
+        // Insert a MIDI clip with a 1-beat note
+        auto midiClip = track->insertMIDIClip ({ 0.0s, TimePosition (1.0s) }, nullptr);
+        midiClip->getSequence().addNote (69, BeatPosition::fromBeats (0.0), BeatDuration::fromBeats (1.0), 127, 0, nullptr);
+        const auto trackLength = track->getLengthIncludingInputTracks();
+        CHECK (std::abs (trackLength.inSeconds() - 1.0) <= 0.001);
+
+        // Check expected end allowance
+        juce::Array<EditItemID> trackIDs { track->itemID };
+        juce::Array<Clip*> clips { midiClip.get() };
+        const auto endAllowance = RenderOptions::findEndAllowance (*edit, &trackIDs, &clips);
+        CHECK (std::abs (endAllowance.inSeconds() - tailLength) <= 0.001);
+
+        // Ensure freezing that track has the track length plus the end allowance
+        const auto expectedTotalLength = trackLength + TimeDuration::fromSeconds (tailLength);
+
         {
+            REQUIRE (track->setFrozen (true, AudioTrack::individualFreeze).wasOk());
+            const auto freezeFile = AudioFile (engine, TemporaryFileManager::getFreezeFileForTrack (*track));
+            CHECK (std::abs (freezeFile.getLength() - expectedTotalLength.inSeconds()) <= 0.001);
+
+            engine.getAudioFileManager().releaseAllFiles();
+            edit->getTempDirectory (false).deleteRecursively();
+            CHECK (! freezeFile.getFile().exists());
+        }
+
+        {
+            track->unfreeze (AudioTrack::individualFreeze);
+
+            // Create a new track and set the destination of the first one to this
+            auto track2 = edit->insertNewAudioTrack ({ {},{} }, nullptr);
+            track->getOutput().setOutputToTrack (track2.get());
+            trackIDs = juce::Array<EditItemID> { track2->itemID };
+            CHECK_MESSAGE (RenderOptions::findEndAllowance (*edit, &trackIDs, nullptr) == TimeDuration(),
+                           "End allowance of new empty track is not 0");
+
+            // Now freeze this track and it should contain track's end allowance
+            REQUIRE (track2->setFrozen (true, AudioTrack::individualFreeze).wasOk());
+            const auto freezeFile = AudioFile (engine, TemporaryFileManager::getFreezeFileForTrack (*track2));
+            CHECK (std::abs (freezeFile.getLength() - expectedTotalLength.inSeconds()) <= 0.001);
+
+            engine.getAudioFileManager().releaseAllFiles();
+            edit->getTempDirectory (false).deleteRecursively();
+            CHECK (! freezeFile.getFile().exists());
+        }
+    }
+
+    TEST_CASE ("Track Freeze: Frozen wave clip track is audible in the playback graph")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 2.0, 2, 220.0f);
+        insertWaveClip (*track, {}, sinFile->getFile(), { .time = { 0_tp, 2_tp } },
+                        DeleteExistingClips::no);
+
+        freeze_test_helpers::checkFrozenTrackMatchesUnfrozenPlayback (*edit, *track);
+    }
+
+    TEST_CASE ("Track Freeze: Frozen synth track is audible in the playback graph")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto& storage = engine.getPropertyStorage();
+        const auto oldFreezePoint = storage.getProperty (SettingID::freezePoint, 1);
+
+        for (auto position : { FreezePointPlugin::beforeAllPlugins, FreezePointPlugin::preFader, FreezePointPlugin::postFader })
+        {
+            CAPTURE ((int) position);
+            storage.setProperty (SettingID::freezePoint, (int) position);
+
             auto edit = test_utilities::createTestEdit (engine);
             auto track = getAudioTracks (*edit)[0];
 
-            // Create a track with a plugin with end allowance
-            auto synth = dynamic_cast<FourOscPlugin*> (edit->getPluginCache().createNewPlugin (FourOscPlugin::xmlTypeName, {}).get());
-            static auto organPatch = "<PLUGIN type=\"4osc\" id=\"1069\" enabled=\"1\" filterType=\"1\" presetName=\"4OSC: Organ\" filterFreq=\"127.0\" ampAttack=\"0.60000002384185791016\" ampDecay=\"10.0\" ampSustain=\"100.0\" ampRelease=\"0.40000000596046447754\" waveShape1=\"4\" tune2=\"-24.0\" waveShape2=\"4\"> <MODMATRIX/> </PLUGIN>";
-
-            if (auto e = juce::parseXML (organPatch))
-                if (auto v = juce::ValueTree::fromXml (*e); v.isValid())
-                    synth->restorePluginStateFromValueTree (v);
-
-            const auto tailLength = synth->getTailLength();
-            expectGreaterThan (tailLength, 0.0);
-
+            auto synth = edit->getPluginCache().createNewPlugin (FourOscPlugin::xmlTypeName, {});
+            REQUIRE (synth != nullptr);
             track->pluginList.insertPlugin (*synth, 0, nullptr);
 
-            // Insert a MIDI clip with a 1-beat note
-            auto midiClip = track->insertMIDIClip ({ 0.0s, TimePosition (1.0s) }, nullptr);
-            midiClip->getSequence().addNote (69, BeatPosition::fromBeats (0.0), BeatDuration::fromBeats (1.0), 127, 0, nullptr);
-            const auto trackLength = track->getLengthIncludingInputTracks();
-            expectWithinAbsoluteError (trackLength.inSeconds(), 1.0, 0.001);
+            auto midiClip = track->insertMIDIClip ({ 0_tp, 2_tp }, nullptr);
+            midiClip->getSequence().addNote (57, BeatPosition(), BeatDuration::fromBeats (4.0), 127, 0, nullptr);
 
-            // Check expected end allowance
-            juce::Array<EditItemID> trackIDs { track->itemID };
-            juce::Array<Clip*> clips { midiClip.get() };
-            const auto endAllowance = RenderOptions::findEndAllowance (*edit, &trackIDs, &clips);
-            expectWithinAbsoluteError (endAllowance.inSeconds(), tailLength, 0.001);
+            freeze_test_helpers::checkFrozenTrackMatchesUnfrozenPlayback (*edit, *track);
+        }
 
-            // Ensure freezing that track has the track length plus the end allowance
-            const auto expectedTotalLength = trackLength + TimeDuration::fromSeconds (tailLength);
+        storage.setProperty (SettingID::freezePoint, oldFreezePoint);
+    }
 
+    TEST_CASE ("Track Freeze: Frozen synth wrapped in a multi-output rack is audible")
+    {
+        // Wrapping a multi-out instrument (e.g. Kontakt) creates a rack with one output per plugin
+        // output, but the track still only uses the rack instance's stereo channel mapping
+        auto& engine = *Engine::getEngines()[0];
+
+        for (int numRackOutputs : { 2, 16, 64 })
+        {
+            CAPTURE (numRackOutputs);
+
+            auto edit = test_utilities::createTestEdit (engine, 1, Edit::EditRole::forEditing);
+            edit->getMasterVolumePlugin()->setVolumeDb (0.0f);
+            auto track = getAudioTracks (*edit)[0];
+
+            auto synth = edit->getPluginCache().createNewPlugin (FourOscPlugin::xmlTypeName, {});
+            REQUIRE (synth != nullptr);
+
+            Plugin::Array plugins;
+            plugins.add (synth);
+            auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+            REQUIRE (rackType != nullptr);
+
+            // Connect the synth to every extra output, as a multi-out plugin's wrapper would be
+            while (rackType->getOutputNames().size() < numRackOutputs + 1) // +1 for the MIDI output
             {
-                track->setFrozen (true, AudioTrack::individualFreeze);
-                const auto freezeFile = AudioFile (engine, TemporaryFileManager::getFreezeFileForTrack (*track));
-                expectWithinAbsoluteError (freezeFile.getLength(), expectedTotalLength.inSeconds(), 0.001);
-
-                engine.getAudioFileManager().releaseAllFiles();
-                edit->getTempDirectory (false).deleteRecursively();
-                expect (! freezeFile.getFile().exists());
+                const auto pin = rackType->getOutputNames().size();
+                rackType->addOutput (-1, "Output " + juce::String (pin));
+                rackType->addConnection (synth->itemID, 1 + (pin - 1) % 2, {}, pin);
             }
 
-            {
-                track->setFrozen (false, AudioTrack::individualFreeze);
+            auto rackInstance = dynamic_cast<RackInstance*> (track->pluginList.insertPlugin (RackInstance::create (*rackType), 0).get());
+            REQUIRE (rackInstance != nullptr);
+            CHECK_EQ (rackInstance->getNumOutputChannels(), 2);
 
-                // Create a new track and set the destination of the first one to this
-                auto track2 = edit->insertNewAudioTrack ({ {},{} }, nullptr);
-                track->getOutput().setOutputToTrack (track2.get());
-                trackIDs = juce::Array<EditItemID> { track2->itemID };
-                expectEquals (RenderOptions::findEndAllowance (*edit, &trackIDs, nullptr), TimeDuration(),
-                              "End allowance of new empty track is not 0");
+            auto midiClip = track->insertMIDIClip ({ 0_tp, 2_tp }, nullptr);
+            midiClip->getSequence().addNote (57, BeatPosition(), BeatDuration::fromBeats (4.0), 127, 0, nullptr);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
 
-                // Now freeze this track and it should contain track's end allowance
-                track2->setFrozen (true, AudioTrack::individualFreeze);
-                const auto freezeFile = AudioFile (engine, TemporaryFileManager::getFreezeFileForTrack (*track2));
-                expectWithinAbsoluteError (freezeFile.getLength(), expectedTotalLength.inSeconds(), 0.001);
+            const auto length = TimeDuration::fromSeconds (2.0);
+            const auto unfrozenRMS = freeze_test_helpers::getLivePlaybackRMS (*edit, length);
+            REQUIRE_GT (unfrozenRMS, 0.05f);
 
-                engine.getAudioFileManager().releaseAllFiles();
-                edit->getTempDirectory (false).deleteRecursively();
-                expect (! freezeFile.getFile().exists());
-            }
+            REQUIRE (track->setFrozen (true, AudioTrack::individualFreeze).wasOk());
+            REQUIRE (track->isFrozen (AudioTrack::individualFreeze));
+
+            const auto freezeFile = AudioFile (engine, TemporaryFileManager::getFreezeFileForTrack (*track));
+            REQUIRE (freezeFile.getFile().existsAsFile());
+            CHECK_LE (freezeFile.getInfo().numChannels, 2);
+
+            const auto frozenRMS = freeze_test_helpers::getLivePlaybackRMS (*edit, length);
+            CHECK_MESSAGE (std::abs (frozenRMS - unfrozenRMS) <= unfrozenRMS * 0.1f,
+                           ("Frozen RMS " + juce::String (frozenRMS, 4) + " vs unfrozen RMS " + juce::String (unfrozenRMS, 4)
+                             + ", freeze file channels " + juce::String (freezeFile.getInfo().numChannels)
+                             + ", size " + juce::File::descriptionOfSizeInBytes (freezeFile.getFile().getSize())).toStdString());
+
+            track->unfreeze (AudioTrack::individualFreeze);
+            engine.getAudioFileManager().releaseAllFiles();
+            edit->getTempDirectory (false).deleteRecursively();
         }
     }
-};
 
-static TrackFreezeTests trackFreezeTests;
+    TEST_CASE ("Track Freeze: Freeze Point tracks routed elsewhere play back in the live graph")
+    {
+        // Only the plugins before the Freeze Point are rendered, so anything after it
+        // (sends, racks) has to keep working from the freeze file, as does a sidechain
+        // keyed from the frozen track
+        auto& engine = *Engine::getEngines()[0];
+        test_utilities::EnginePlayer player (engine, { .sampleRate = 44100.0, .blockSize = 512, .inputChannels = 0, .outputChannels = 2,
+                                                       .inputNames = {}, .outputNames = {} });
+
+        auto sin330 = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 2.0, 2, 330.0f);
+        auto edit = test_utilities::createTestEdit (engine, 2, Edit::EditRole::forEditing);
+        edit->getMasterVolumePlugin()->setVolumeDb (0.0f);
+        auto tracks = getAudioTracks (*edit);
+        auto& cache = edit->getPluginCache();
+
+        // Track 1: synth -> Freeze Point
+        tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (FourOscPlugin::xmlTypeName, {}), 0, nullptr);
+        tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (FreezePointPlugin::xmlTypeName, {}), 1, nullptr);
+        auto midiClip = tracks[0]->insertMIDIClip ({ 0_tp, 2_tp }, nullptr);
+        midiClip->getSequence().addNote (57, BeatPosition(), BeatDuration::fromBeats (4.0), 127, 0, nullptr);
+
+        SUBCASE ("Aux send after the Freeze Point")
+        {
+            tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (AuxSendPlugin::xmlTypeName, {}), 2, nullptr);
+            tracks[1]->pluginList.insertPlugin (cache.createNewPlugin (AuxReturnPlugin::xmlTypeName, {}), 0, nullptr);
+        }
+
+        SUBCASE ("Rack after the Freeze Point")
+        {
+            Plugin::Array plugins;
+            plugins.add (cache.getOrCreatePluginFor (VolumeAndPanPlugin::create()));
+            auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+            tracks[0]->pluginList.insertPlugin (RackInstance::create (*rackType), 2);
+        }
+
+        SUBCASE ("Frozen track keys a sidechain")
+        {
+            insertWaveClip (*tracks[1], {}, sin330->getFile(), { .time = { 0_tp, 2_tp } }, DeleteExistingClips::no);
+
+            auto plugin = cache.createNewPlugin (CompressorPlugin::xmlTypeName, {});
+            tracks[1]->pluginList.insertPlugin (plugin, 0, nullptr);
+            auto comp = dynamic_cast<CompressorPlugin*> (plugin.get());
+            REQUIRE (comp != nullptr);
+            comp->useSidechainTrigger = true;
+            comp->setSidechainSourceID (tracks[0]->itemID);
+            comp->guessSidechainRouting();
+            comp->setThreshold (0.05f);
+            comp->setRatio (0.1f);
+        }
+
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+        const auto length = 2_td;
+
+        const auto unfrozenRMS = freeze_test_helpers::getDevicePlaybackRMS (player, *edit, length);
+        REQUIRE_GT (unfrozenRMS, 0.05f);
+
+        REQUIRE (tracks[0]->setFrozen (true, AudioTrack::individualFreeze).wasOk());
+        REQUIRE (tracks[0]->isFrozen (AudioTrack::individualFreeze));
+
+        const auto frozenRMS = freeze_test_helpers::getDevicePlaybackRMS (player, *edit, length);
+        CHECK_MESSAGE (std::abs (frozenRMS - unfrozenRMS) <= unfrozenRMS * 0.1f,
+                       ("Frozen RMS " + juce::String (frozenRMS, 4) + " vs unfrozen RMS " + juce::String (unfrozenRMS, 4)).toStdString());
+
+        tracks[0]->unfreeze (AudioTrack::individualFreeze);
+        midiClip = nullptr;
+        edit->getTempDirectory (false).deleteRecursively();
+        edit = nullptr;
+        engine.getAudioFileManager().releaseAllFiles();
+    }
+
+    TEST_CASE ("Track Freeze: Tracks feeding other tracks before the Freeze Point can't be frozen")
+    {
+        // Freezing bypasses the plugins before the Freeze Point, so a shared rack or an aux send
+        // there would stop feeding the other tracks and they'd go silent (#1146)
+        auto& engine = *Engine::getEngines()[0];
+        std::unique_ptr<Edit> edit;
+        AudioTrack* trackToFreeze = nullptr;
+        Track* fedTrack = nullptr;
+
+        SUBCASE ("The MIDI track of a multi-out rack")
+        {
+            edit = freeze_test_helpers::createMultiOutRackEdit (engine);
+            trackToFreeze = getAudioTracks (*edit)[0];
+            fedTrack = getAudioTracks (*edit)[1];
+        }
+
+        SUBCASE ("An output track of a multi-out rack")
+        {
+            edit = freeze_test_helpers::createMultiOutRackEdit (engine);
+            trackToFreeze = getAudioTracks (*edit)[1];
+            fedTrack = getAudioTracks (*edit)[0];
+        }
+
+        SUBCASE ("An aux send before the Freeze Point")
+        {
+            edit = test_utilities::createTestEdit (engine, 2, Edit::EditRole::forEditing);
+            edit->getMasterVolumePlugin()->setVolumeDb (0.0f);
+            auto tracks = getAudioTracks (*edit);
+            auto& cache = edit->getPluginCache();
+
+            tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (FourOscPlugin::xmlTypeName, {}), 0, nullptr);
+            tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (AuxSendPlugin::xmlTypeName, {}), 1, nullptr);
+            tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (FreezePointPlugin::xmlTypeName, {}), 2, nullptr);
+            tracks[1]->pluginList.insertPlugin (cache.createNewPlugin (AuxReturnPlugin::xmlTypeName, {}), 0, nullptr);
+            tracks[0]->insertMIDIClip ({ 0_tp, 2_tp }, nullptr)->getSequence()
+                .addNote (57, BeatPosition(), BeatDuration::fromBeats (4.0), 127, 0, nullptr);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+
+            trackToFreeze = tracks[0];
+            fedTrack = tracks[1];
+        }
+
+        REQUIRE (trackToFreeze != nullptr);
+        CHECK_EQ (trackToFreeze->getTracksFedByFreezablePlugins(), juce::Array<Track*> { fedTrack });
+
+        const auto length = TimeDuration::fromSeconds (2.0);
+        const auto unfrozenRMS = freeze_test_helpers::getLivePlaybackRMS (*edit, length);
+        REQUIRE_GT (unfrozenRMS, 0.05f);
+
+        const auto result = trackToFreeze->setFrozen (true, AudioTrack::individualFreeze);
+        CHECK (result.failed());
+        CHECK (result.getErrorMessage().contains ("\"" + fedTrack->getName() + "\""));
+        CHECK (! trackToFreeze->isFrozen (AudioTrack::individualFreeze));
+        CHECK (! TemporaryFileManager::getFreezeFileForTrack (*trackToFreeze).exists());
+
+        const auto afterRMS = freeze_test_helpers::getLivePlaybackRMS (*edit, length);
+        CHECK (std::abs (afterRMS - unfrozenRMS) <= unfrozenRMS * 0.01f);
+
+        edit->getTempDirectory (false).deleteRecursively();
+    }
+
+    TEST_CASE ("Track Freeze: Freezing a track with nothing to render fails")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine, 1, Edit::EditRole::forEditing);
+        auto track = getAudioTracks (*edit)[0];
+        track->setName ("Empty");
+
+        const auto result = track->setFrozen (true, AudioTrack::individualFreeze);
+        CHECK (result.failed());
+        CHECK (result.getErrorMessage().contains ("\"Empty\""));
+        CHECK (! track->isFrozen (AudioTrack::individualFreeze));
+    }
+
+    TEST_CASE ("Track Freeze: Tracks with racks and sends that only feed themselves can be frozen")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine, 2, Edit::EditRole::forEditing);
+        auto tracks = getAudioTracks (*edit);
+        auto& cache = edit->getPluginCache();
+
+        // A rack with no other instances, and an aux send with no return
+        Plugin::Array plugins;
+        plugins.add (cache.getOrCreatePluginFor (VolumeAndPanPlugin::create()));
+        auto rackType = RackType::createTypeToWrapPlugins (plugins, *edit);
+        tracks[0]->pluginList.insertPlugin (RackInstance::create (*rackType), 0);
+        tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (AuxSendPlugin::xmlTypeName, {}), 1, nullptr);
+        CHECK (tracks[0]->getTracksFedByFreezablePlugins().isEmpty());
+
+        SUBCASE ("A return after the Freeze Point is fine")
+        {
+            tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (AuxReturnPlugin::xmlTypeName, {}), -1, nullptr);
+            CHECK (tracks[0]->getTracksFedByFreezablePlugins().isEmpty());
+        }
+
+        SUBCASE ("Plugins after the Freeze Point don't count")
+        {
+            tracks[0]->pluginList.insertPlugin (cache.createNewPlugin (FreezePointPlugin::xmlTypeName, {}), 0, nullptr);
+            tracks[1]->pluginList.insertPlugin (cache.createNewPlugin (AuxReturnPlugin::xmlTypeName, {}), 0, nullptr);
+            tracks[1]->pluginList.insertPlugin (RackInstance::create (*rackType), 0);
+            CHECK (tracks[0]->getTracksFedByFreezablePlugins().isEmpty());
+        }
+
+        SUBCASE ("Disabled sends don't count")
+        {
+            tracks[1]->pluginList.insertPlugin (cache.createNewPlugin (AuxReturnPlugin::xmlTypeName, {}), 0, nullptr);
+            CHECK_EQ (tracks[0]->getTracksFedByFreezablePlugins(), juce::Array<Track*> { tracks[1] });
+
+            tracks[0]->pluginList.findFirstPluginOfType<AuxSendPlugin>()->setEnabled (false);
+            CHECK (tracks[0]->getTracksFedByFreezablePlugins().isEmpty());
+        }
+    }
+
+    TEST_CASE ("Track Freeze: the freeze file format reads back as many channels as it wrote")
+    {
+        // Freeze files are written in the engine's own float format, which has to read
+        // back every channel a render can produce (Racks have up to 64 outputs)
+        auto& engine = *Engine::getEngines()[0];
+        auto format = engine.getAudioFileFormatManager().getFrozenFileFormat();
+        REQUIRE (format != nullptr);
+
+        for (int numChannels : { 1, 2, 16, 17, 32, 64 })
+        {
+            CAPTURE (numChannels);
+            juce::TemporaryFile tempFile (".freeze");
+            const AudioFile audioFile (engine, tempFile.getFile());
+
+            {
+                AudioFileWriter writer (audioFile, format, numChannels, 44100.0, 32, {}, 0);
+                REQUIRE (writer.isOpen());
+
+                juce::AudioBuffer<float> buffer (numChannels, 4410);
+
+                for (int chan = 0; chan < numChannels; ++chan)
+                    juce::FloatVectorOperations::fill (buffer.getWritePointer (chan), (float) (chan + 1) / 100.0f, buffer.getNumSamples());
+
+                REQUIRE (writer.appendBuffer (buffer, buffer.getNumSamples()));
+            }
+
+            engine.getAudioFileManager().checkFileForChanges (audioFile);
+            const auto info = audioFile.getInfo();
+            CHECK_EQ (info.numChannels, numChannels);
+            CHECK_EQ (info.lengthInSamples, 4410);
+
+            if (auto buffer = test_utilities::loadFileInToBuffer (engine, tempFile.getFile()))
+            {
+                REQUIRE_EQ (buffer->getNumChannels(), numChannels);
+                CHECK_EQ (buffer->getSample (numChannels - 1, 100), doctest::Approx ((float) numChannels / 100.0f));
+            }
+            else
+            {
+                FAIL_CHECK ("Couldn't read the file back");
+            }
+
+            engine.getAudioFileManager().releaseFile (audioFile);
+        }
+    }
+
+    TEST_CASE ("Track Freeze: Group freezing a track that can't be rendered unfreezes it")
+    {
+        // A group-frozen track is removed from the live graph and played back from its output
+        // device's freeze file, so if it's left out of every device render it must not stay
+        // frozen or it goes silent
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine, 1, Edit::EditRole::forEditing);
+        auto track = getAudioTracks (*edit)[0];
+
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 2.0);
+        insertWaveClip (*track, {}, sinFile->getFile(), { .time = { 0_tp, 2_tp } },
+                        DeleteExistingClips::no);
+
+        SUBCASE ("Muted track")
+        {
+            track->setMute (true);
+        }
+
+        SUBCASE ("Output device unavailable")
+        {
+            track->getOutput().setOutputToDeviceID ("no_such_device");
+        }
+
+        // Edits to the track unfreeze it, so let those settle before freezing
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (500);
+
+        REQUIRE (track->setFrozen (true, Track::groupFreeze).wasOk());
+        REQUIRE (track->isFrozen (Track::groupFreeze));
+
+        // The freeze render happens asynchronously once the frozen flag changes
+        for (int i = 0; i < 200 && track->isFrozen (Track::groupFreeze); ++i)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        CHECK_FALSE (track->isFrozen (Track::groupFreeze));
+        CHECK (TemporaryFileManager::getFrozenTrackFiles (*edit).isEmpty());
+    }
+
+    TEST_CASE ("Track Freeze: Frozen track is audible in different track layouts")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine, 3, Edit::EditRole::forEditing);
+        auto sinFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, 2.0, 2, 220.0f);
+
+        AudioTrack::Ptr track;
+
+        SUBCASE ("Third track")
+        {
+            track = getAudioTracks (*edit)[2];
+        }
+
+        SUBCASE ("After a folder")
+        {
+            auto folder = edit->insertNewFolderTrack (TrackInsertPoint (nullptr, nullptr), nullptr, false);
+            edit->insertNewAudioTrack (TrackInsertPoint (folder.get(), nullptr), nullptr);
+            track = edit->insertNewAudioTrack (TrackInsertPoint (nullptr, folder.get()), nullptr);
+        }
+
+        SUBCASE ("After a submix")
+        {
+            auto folder = edit->insertNewFolderTrack (TrackInsertPoint (nullptr, nullptr), nullptr, true);
+            edit->insertNewAudioTrack (TrackInsertPoint (folder.get(), nullptr), nullptr);
+            track = edit->insertNewAudioTrack (TrackInsertPoint (nullptr, folder.get()), nullptr);
+        }
+
+        SUBCASE ("Inside a folder")
+        {
+            auto folder = edit->insertNewFolderTrack (TrackInsertPoint (nullptr, nullptr), nullptr, false);
+            edit->insertNewAudioTrack (TrackInsertPoint (folder.get(), nullptr), nullptr);
+            track = edit->insertNewAudioTrack (TrackInsertPoint (folder.get(), nullptr), nullptr);
+        }
+
+        SUBCASE ("After marker and chord tracks")
+        {
+            edit->ensureMarkerTrack();
+            edit->ensureChordTrack();
+            edit->ensureArrangerTrack();
+            track = getAudioTracks (*edit)[1];
+        }
+
+        REQUIRE (track != nullptr);
+        insertWaveClip (*track, {}, sinFile->getFile(), { .time = { 0_tp, 2_tp } }, DeleteExistingClips::no);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+
+        freeze_test_helpers::checkFrozenTrackMatchesUnfrozenPlayback (*edit, *track);
+    }
+
+    TEST_CASE ("Track Freeze: Group freeze matches a track to its output device")
+    {
+        // Group freezing renders one file per output device from the tracks that output to it,
+        // so a track has to match its device whether its output is a device ID or the default alias
+        auto& engine = *Engine::getEngines()[0];
+        test_utilities::EnginePlayer player (engine, { .sampleRate = 44100.0, .blockSize = 512, .inputChannels = 0, .outputChannels = 2,
+                                                       .inputNames = {}, .outputNames = {} });
+
+        auto& dm = engine.getDeviceManager();
+        auto defaultWaveOut = dm.getDefaultWaveOutDevice();
+        REQUIRE (defaultWaveOut != nullptr);
+        REQUIRE (defaultWaveOut->isEnabled());
+
+        auto edit = test_utilities::createTestEdit (engine, 1, Edit::EditRole::forEditing);
+        auto& output = getAudioTracks (*edit)[0]->getOutput();
+
+        SUBCASE ("Default audio output")
+        {
+            output.setOutputToDefaultDevice (false);
+            CHECK (output.outputsToDevice (defaultWaveOut->getName(), true));
+        }
+
+        SUBCASE ("Specific output device")
+        {
+            output.setOutputToDeviceID (defaultWaveOut->getDeviceID());
+            CHECK (output.outputsToDevice (defaultWaveOut->getName(), true));
+        }
+    }
+}
+
+TEST_SUITE ("tracktion_engine")
+{
+    TEST_CASE ("Multichannel track freeze")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto& afm = engine.getAudioFileManager();
+
+        // Create a 6-channel source with unique constant values per channel
+        const choc::buffer::ChannelCount numSourceChannels = 6;
+        const double sampleRate = 44100.0;
+        const auto clipLength = 1_td;
+        const auto numFrames = static_cast<choc::buffer::FrameCount> (toSamples (clipLength, sampleRate));
+
+        choc::buffer::InterleavedBuffer<float> sourceBuffer (numSourceChannels, numFrames);
+
+        for (choc::buffer::ChannelCount ch = 0; ch < numSourceChannels; ++ch)
+            for (choc::buffer::FrameCount f = 0; f < numFrames; ++f)
+                sourceBuffer.getSample (ch, f) = (float) (ch + 1) * 0.1f;
+
+        const juce::File virtualFile ("/memory/multichannel-freeze-test.wav");
+        const auto key = virtualFile.getFullPathName().toStdString();
+        afm.registerMemoryBuffer (key, sourceBuffer.getView(), sampleRate);
+
+        auto edit = test_utilities::createTestEdit (engine);
+        auto track = getAudioTracks (*edit)[0];
+        auto clip = insertWaveClip (*track, {}, virtualFile,
+                                    { .time = { 0_tp, clipLength } },
+                                    DeleteExistingClips::no);
+        REQUIRE (clip != nullptr);
+        clip->setActiveChannelConfiguration (ChannelConfiguration::discreteChannels ((int) numSourceChannels));
+
+        // Freeze the track
+        REQUIRE (track->setFrozen (true, AudioTrack::individualFreeze).wasOk());
+
+        // Verify the freeze file has the correct channel count
+        const auto freezeFile = AudioFile (engine, TemporaryFileManager::getFreezeFileForTrack (*track));
+        REQUIRE (freezeFile.getFile().exists());
+
+        auto freezeInfo = freezeFile.getInfo();
+        CHECK_EQ (freezeInfo.numChannels, (int) numSourceChannels);
+
+        // Load freeze file and verify per-channel content
+        auto buffer = test_utilities::loadFileInToBuffer (engine, freezeFile.getFile());
+        REQUIRE (buffer.has_value());
+        CHECK_EQ (buffer->getNumChannels(), (int) numSourceChannels);
+
+        for (int ch = 0; ch < (int) numSourceChannels; ++ch)
+        {
+            float expected = (float) (ch + 1) * 0.1f;
+            auto rms = buffer->getRMSLevel (ch, 0, buffer->getNumSamples());
+            CHECK (rms == doctest::Approx (expected).epsilon (0.02));
+        }
+
+        // Cleanup
+        engine.getAudioFileManager().releaseAllFiles();
+        edit->getTempDirectory (false).deleteRecursively();
+        afm.unregisterMemoryBuffer (key);
+    }
+
+    TEST_CASE ("Renderer: missing source file doesn't stall the render")
+    {
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine, 2);
+
+        const auto fileLength = 1_td;
+        auto presentFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, fileLength.inSeconds());
+        auto missingFile = graph::test_utilities::getSinFile<juce::WavAudioFormat> (44100.0, fileLength.inSeconds());
+        const auto sourceToDelete = missingFile->getFile();
+
+        auto tracks = getAudioTracks (*edit);
+        REQUIRE (insertWaveClip (*tracks[0], {}, presentFile->getFile(), { .time = { 0_tp, fileLength } },
+                                 DeleteExistingClips::no) != nullptr);
+        REQUIRE (insertWaveClip (*tracks[1], {}, sourceToDelete, { .time = { 0_tp, fileLength } },
+                                 DeleteExistingClips::no) != nullptr);
+
+        // Pull one source out from under the Edit, as happens when a user moves or
+        // deletes a sample that a saved Edit still references
+        engine.getAudioFileManager().releaseAllFiles();
+        REQUIRE (sourceToDelete.deleteFile());
+        engine.getAudioFileManager().checkFilesForChanges();
+
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.time = { 0_tp, fileLength };
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.tracksToDo = toBitSet (getAllTracks (*edit));
+
+        std::atomic<bool> callbackFinished { false };
+        bool renderSucceeded = false;
+
+        auto handle = EditRenderer::render (std::move (params),
+                                            [&] (tl::expected<juce::File, std::string> res)
+                                            {
+                                                renderSucceeded = res.has_value();
+                                                callbackFinished = true;
+                                            });
+
+        // The missing source can never appear, so the render has to finish rather than spin
+        const auto giveUpTime = juce::Time::getMillisecondCounter() + 30000;
+
+        while (! callbackFinished && juce::Time::getMillisecondCounter() < giveUpTime)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+        CHECK (callbackFinished.load());
+
+        if (callbackFinished)
+        {
+            CHECK (renderSucceeded);
+
+            // The track with the readable source still renders; the missing one is just silent
+            auto buffer = test_utilities::loadFileInToBuffer (engine, destFile.getFile());
+            REQUIRE (buffer.has_value());
+            CHECK (buffer->getMagnitude (0, buffer->getNumSamples()) > 0.1f);
+        }
+        else
+        {
+            // Don't leave a spinning render thread behind for the rest of the suite
+            handle->cancel();
+
+            while (! callbackFinished)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+
+        handle.reset();
+        engine.getAudioFileManager().releaseAllFiles();
+        edit->getTempDirectory (false).deleteRecursively();
+    }
+
+    TEST_CASE ("Rendering whilst stopped with play-in-stop frees the playback graph first")
+    {
+        // A render whilst stopped used to leave the play-in-stop graph running and
+        // force every plugin's initialise count to zero underneath it, so building the
+        // render graph re-ran initialise() on plugins the live graph was still processing
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = test_utilities::createTestEdit (engine, 1, Edit::EditRole::forEditing);
+        edit->playInStopEnabled = true;
+
+        HostedAudioDeviceInterface::Parameters p;
+        p.blockSize = 256;
+        auto player = test_utilities::createEnginePlayer (*edit, p);
+
+        auto track = getAudioTracks (*edit)[0];
+        auto eq = edit->getPluginCache().createNewPlugin (EqualiserPlugin::xmlTypeName, {});
+        REQUIRE (eq != nullptr);
+        track->pluginList.insertPlugin (eq, 0, nullptr);
+        edit->dispatchPendingUpdatesSynchronously();
+
+        auto& tc = edit->getTransport();
+        tc.ensureContextAllocated (true);
+        tc.stop (false, false);
+
+        REQUIRE (tc.isPlayContextActive());
+        REQUIRE (! eq->baseClassNeedsInitialising());
+
+        juce::TemporaryFile destFile (".wav");
+        Renderer::Parameters params (*edit);
+        params.destFile = destFile.getFile();
+        params.audioFormat = engine.getAudioFileFormatManager().getWavFormat();
+        params.time = { 0_tp, 1_tp };
+        params.tracksToDo.setBit (0);
+        params.usePlugins = true;
+        params.sampleRateForAudio = p.sampleRate;
+        params.blockSizeForAudio = 1024; // A different block size forces a full initialise()
+
+        // Stopping an already stopped transport doesn't free the play-in-stop graph,
+        // so the render itself has to
+        Renderer::renderToFile ("Render", params);
+
+        // The playback graph is reallocated afterwards and still holds the plugin
+        CHECK (tc.isPlayContextActive());
+        CHECK (! eq->baseClassNeedsInitialising());
+    }
+
+}
 
 #endif
 

@@ -18,9 +18,10 @@ if (MSVC)
     set (CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# If we are compiling for macOS we want to target OS versions down to 10.13
-if (APPLE)
-    set (CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE INTERNAL "")
+# If we are compiling for macOS we want to target OS versions down to 12.0,
+# unless a parent project has already chosen its own deployment target
+if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set (CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE INTERNAL "")
 endif()
 
 # Adds all the module sources so they appear correctly in the IDE
@@ -34,7 +35,22 @@ else()
     MESSAGE(STATUS "Not building with VST2")
 endif()
 
-juce_add_pip (${TARGET_NAME}.h)
+set(formats AAX AU AUv3 Standalone Unity VST3)
+
+if(TARGET juce_vst2_sdk)
+    list(APPEND formats VST)
+endif()
+
+juce_add_plugin(${TARGET_NAME}
+    FORMATS ${formats}
+    PLUGIN_CODE "EiPd"
+    IS_SYNTH TRUE
+    NEEDS_MIDI_INPUT TRUE
+    NEEDS_MIDI_OUTPUT TRUE
+    NEEDS_CURL FALSE
+    NEEDS_WEB_BROWSER FALSE
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    VST3_AUTO_MANIFEST FALSE)
 
 juce_generate_juce_header(${TARGET_NAME})
 
@@ -45,7 +61,8 @@ set_target_properties(${TARGET_NAME} PROPERTIES
     CXX_VISIBILITY_PRESET hidden)
 
 set(SourceFiles
-    ${TARGET_NAME}.h)
+    ${TARGET_NAME}.h
+    ${TARGET_NAME}.cpp)
 
 target_sources(${TARGET_NAME} PRIVATE ${SourceFiles})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX Source FILES ${SourceFiles})
@@ -62,10 +79,11 @@ target_compile_definitions(${TARGET_NAME} PRIVATE
     JUCE_PLUGINHOST_AU=1
     JUCE_PLUGINHOST_LADSPA=1
     JUCE_PLUGINHOST_VST3=1
-    JUCE_USE_CURL=0
-    JUCE_WEB_BROWSER=0
+    JUCE_IGNORE_VST3_MISMATCHED_PARAMETER_ID_WARNING=1
     JUCE_MODAL_LOOPS_PERMITTED=1
-    JUCE_STRICT_REFCOUNTEDPOINTER=1)
+    JUCE_STRICT_REFCOUNTEDPOINTER=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0)
 
 target_link_libraries(${TARGET_NAME} PRIVATE
     tracktion::tracktion_core
@@ -101,7 +119,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
 endif()
 
-# Add custom target to avoid building LV2 which is broken with PIP sources
 add_custom_target(${TARGET_NAME}_common)
 
 add_dependencies(${TARGET_NAME}_common

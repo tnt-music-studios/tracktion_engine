@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Base class for tracks which contain clips and plugins and can be added to Edit[s].
@@ -137,8 +136,20 @@ public:
     /** Returns true if this track is frozen using the given type. */
     virtual bool isFrozen (FreezeType) const                    { return false; }
 
-    /** Attempts to freeze or unfreeze the track using a given FreezeType. */
-    virtual void setFrozen (bool /*shouldBeFrozen*/, FreezeType){}
+    /** Attempts to freeze or unfreeze the track using a given FreezeType.
+
+        Returns a failed Result with a message for the user if the track can't be frozen.
+        This used to show that message itself; to keep that behaviour, show it at the call site:
+        @code
+        if (auto r = track.setFrozen (true, Track::individualFreeze); r.failed())
+            track.edit.engine.getUIBehaviour().showWarningMessage (r.getErrorMessage());
+        @endcode
+        To unfreeze, use unfreeze(), which can't fail.
+    */
+    [[nodiscard]] virtual juce::Result setFrozen (bool /*shouldBeFrozen*/, FreezeType)  { return juce::Result::ok(); }
+
+    /** Unfreezes the track. anyFreeze removes both group and individual freezes. */
+    void unfreeze (FreezeType);
 
     /** Returns true if this track should be hidden from view. */
     bool isHidden() const                                       { return hidden; }
@@ -206,13 +217,6 @@ public:
 
     /** Should return the TrackItem after this time. */
     virtual TrackItem* getNextTrackItemAt (TimePosition)        { return {}; }
-
-    //==============================================================================
-    /** Should insert empty space in to the track, shuffling down any items after the time.
-        @param time             The time point in seconds to insert at
-        @param amountOfSpace    The duration of time to insert
-    */
-    virtual void insertSpaceIntoTrack (TimePosition, TimeDuration);
 
     //==============================================================================
     /** Returns the state of the parent Track. */
@@ -319,7 +323,7 @@ public:
     /** Returns all AutomatableEditItem[s] on this Track.
         @see Plugin, Modifier
     */
-    juce::Array<AutomatableEditItem*> getAllAutomatableEditItems() const;
+    std::vector<AutomatableEditItem*> getAllAutomatableEditItems() const;
 
     /** Returns all pugins on this Track.
         Subclasses may implement this to also return Plugin[s] on Clip[s]
@@ -437,4 +441,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Track)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

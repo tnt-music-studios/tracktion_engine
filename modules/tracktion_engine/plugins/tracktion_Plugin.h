@@ -8,9 +8,12 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
+/** Holds the information needed to construct a Plugin: the owning Edit,
+    the ValueTree that stores the plugin's persistent state, and whether
+    this is a brand-new insertion vs. a reload from saved state.
+*/
 struct PluginCreationInfo
 {
     PluginCreationInfo (const PluginCreationInfo&) = default;
@@ -47,6 +50,15 @@ struct PluginInitialisationInfo
 struct PluginRenderContext
 {
     PluginRenderContext (juce::AudioBuffer<float>* buffer,
+                         int bufferStart, int bufferSize,
+                         MidiMessageArray* midiBuffer, double midiOffset,
+                         TimeRange editTime, bool playing, bool scrubbing, bool rendering,
+                         bool allowBypassedProcessing) noexcept;
+
+    /** @deprecated Use the constructor without the bufferChannels parameter.
+        The destBufferChannels field was never used by the engine.
+    */
+    PluginRenderContext (juce::AudioBuffer<float>* buffer,
                          const juce::AudioChannelSet& bufferChannels,
                          int bufferStart, int bufferSize,
                          MidiMessageArray* midiBuffer, double midiOffset,
@@ -66,7 +78,7 @@ struct PluginRenderContext
     */
     juce::AudioBuffer<float>* destBuffer = nullptr;
 
-    /** A description of the type of channels in each of the channels in destBuffer. */
+    /** @deprecated This field is not used by the engine and will be removed in a future version. */
     juce::AudioChannelSet destBufferChannels;
 
     /** The index of the start point in the audio buffer from which data must be written. */
@@ -105,6 +117,29 @@ struct PluginRenderContext
 
 //==============================================================================
 //==============================================================================
+/** Base class for all audio plugins in the Tracktion Engine.
+
+    A Plugin lives inside a PluginList (owned by a Track, Clip, or RackType)
+    and processes audio/MIDI via applyToBuffer(). Its persistent state is stored
+    in a juce::ValueTree, and it supports automation, sidechain routing, and
+    mirroring.
+
+    Subclasses include ExternalPlugin (hosted VST/AU/etc.), and the built-in
+    internal plugins (volume/pan, EQ, delay, etc.).
+
+    @par Lifecycle
+
+    Plugins are created via PluginCreationInfo, then prepared for playback with
+    initialise() (called indirectly through baseClassInitialise()) and torn down
+    with deinitialise() (via baseClassDeinitialise()). Between those calls the
+    audio graph may call applyToBuffer() on the audio thread.
+
+    @par Threading
+
+    applyToBuffer() runs on the audio thread -- implementations must not
+    allocate, lock, or perform I/O. Most other methods are message-thread only
+    unless noted otherwise.
+*/
 class Plugin  : public Selectable,
                 public juce::ReferenceCountedObject,
                 public Exportable,
@@ -133,30 +168,48 @@ public:
     virtual void flushPluginStateToValueTree() override;
 
     //==============================================================================
+    // Naming & identity
+
     /** The name of the type, e.g. "Compressor" */
     virtual juce::String getName() const override = 0;
+
+    /** Returns a string identifying the plugin type (used as the XML tag name). */
     virtual juce::String getPluginType() = 0;
 
+    /** Returns the plugin vendor/manufacturer name. */
     virtual juce::String getVendor()                              { return "Tracktion"; }
+
+    /** Returns an abbreviated name, ideally fitting within suggestedLength characters. */
     virtual juce::String getShortName (int /*suggestedLength*/)   { return getName(); }
 
-    /** A unique string to idenitify plugin independant of install location */
+    /** Returns the custom name if set, otherwise the built-in getName(). */
+    juce::String getDisplayName() const;
+
+    /** Returns the raw custom name (may be empty). */
+    juce::String getCustomName() const;
+
+    /** Sets a custom display name. Trimmed and limited to 64 chars. Empty clears. */
+    void setCustomName (const juce::String&);
+
+    /** A unique string to identify a plugin independent of install location. */
     virtual juce::String getIdentifierString()                    { return getPluginType(); }
 
-    /** default returns the name, others can return special stuff if needed */
+    /** Returns a tooltip string for UI display. */
     virtual juce::String getTooltip();
 
     //==============================================================================
-    /** Enable/disable the plugin.  */
+    // Enable / freeze / processing state
+
+    /** Enable/disable the plugin. */
     virtual void setEnabled (bool);
     bool isEnabled() const noexcept                         { return enabled.get(); }
 
-    /** This is a bit different to being enabled as when frozen a plugin can't be interacted with. */
+    /** Freezing is stronger than disabling -- a frozen plugin cannot be interacted with at all. */
     void setFrozen (bool shouldBeFrozen);
     bool isFrozen() const noexcept                          { return frozen; }
 
-    /** Enable/Disable processing. If processing is disabled, plugin should minimize memory usage
-        and release any resources possilbe */
+    /** Enable/disable processing. When processing is disabled, the plugin should minimise
+        memory usage and release any resources possible. */
     void setProcessingEnabled (bool p)                      { processing = p; }
     bool isProcessingEnabled() const noexcept               { return processing; }
 
@@ -225,39 +278,128 @@ public:
     double getCpuUsage() const noexcept     { return juce::jlimit (0.0, 1.0, timeToCpuScale * cpuUsageMs.load()); }
 
     //==============================================================================
-    /** This must return the number of output channels that the plugin will produce, given
-        a number of input channels.
+    // Channel configuration & audio characteristics
+
+    /** Returns the number of output channels this plugin will produce for track routing.
 
         E.g. some might be able to do mono, so will return 1 if the input is 1, 2 if it is 2, etc.
 
-        The default impl just returns the number of items that getChannelNames() returns.
+        The default impl returns the number of items that getChannelNames() returns.
+        Subclasses with sidechain buses must override this to return only the main bus
+        output count, since sidechain channels are routed separately.
     */
     virtual int getNumOutputChannelsGivenInputs (int numInputChannels);
 
+    /** Returns true if the plugin can produce audio when its input is silent
+        (e.g. synths, plugins with tails, or plugins driven by automation). */
     virtual bool producesAudioWhenNoAudioInput()        { return isAutomationNeeded(); }
+
+    /** Returns true if the plugin has no tail (i.e. output is silent once input stops). */
     virtual bool noTail()                               { return true; }
 
+    /** Fills the provided StringArrays with the names of this plugin's input and/or
+        output channels. Either pointer may be nullptr if not needed. */
     virtual void getChannelNames (juce::StringArray* ins, juce::StringArray* outs);
-    virtual bool takesAudioInput()                      { return ! isSynth(); }
+
+    /** Describes the full input/output bus topology of a plugin.
+        The first entry in each list (if present) is the main bus; additional entries
+        represent sidechain, aux, or multi-out buses.
+
+        Empty `inputs`/`outputs` means the plugin has no audio bus in that direction (a
+        MIDI-only plugin, or a pure synth with no audio input, etc.). A bus that exists
+        but imposes no channel-count requirement — i.e. pass-through — uses
+        `ChannelConfiguration::none()`.
+
+            return {};                                                                       // MIDI plugin (no audio buses either side)
+            return BusLayout::singleStereoInOut();  // typical stereo effect
+            return BusLayout::singleInOut (ChannelConfiguration::stereo(), ChannelConfiguration::none());    // stereo in, pass-through out
+    */
+    struct BusLayout
+    {
+        choc::SmallVector<ChannelConfiguration, 4> inputs;
+        choc::SmallVector<ChannelConfiguration, 4> outputs;
+
+        /** Returns a layout with one main input bus and one main output bus. Use this
+            for the common single-in-single-out case. Multi-bus plugins (sidechain,
+            aux, multi-out) should construct a BusLayout and populate `inputs`/`outputs`
+            directly. */
+        static BusLayout singleInOut (ChannelConfiguration mainInput, ChannelConfiguration mainOutput);
+
+        /** Shorthand for `singleInOut (ChannelConfiguration::stereo(), ChannelConfiguration::stereo())`.
+            Use for plugins that always work in stereo (the vast majority of stereo effects). */
+        static BusLayout singleStereoInOut();
+
+        /** Shorthand for `singleInOut (ChannelConfiguration::none(), ChannelConfiguration::none())`.
+            Use for plugins that have one audio bus each side but impose no channel-count
+            requirement — e.g. VCA, LevelMeter, ChannelMapper, AuxSend/AuxReturn, Insert. */
+        static BusLayout singlePassThrough();
+    };
+
+    /** Returns the full input/output bus layout of this plugin.
+
+        Every concrete plugin must declare its bus topology here. Multi-out plugins
+        (e.g. ExternalPlugin hosting a VST3 with multiple output buses) report each
+        output bus as a separate entry in the returned layout's `outputs` list; the
+        first entry is the main bus.
+
+        Consumers that only need the main bus can use e.g. `getBusses().outputs.front()`.
+    */
+    virtual BusLayout getBusses() const = 0;
+
+    /** Returns true if this plugin should be fed audio from upstream in the chain.
+        The default derives from the bus layout: a non-synth that declares at least
+        one audio input bus takes audio. Synths that also accept audio input (e.g.
+        for wet/dry mix) should override to return true explicitly. */
+    virtual bool takesAudioInput()                      { return ! isSynth() && ! getBusses().inputs.empty(); }
     virtual bool takesMidiInput()                       { return false; }
     virtual bool isSynth()                              { return false; }
+
+    /** Returns the plugin's processing latency in seconds. */
     virtual double getLatencySeconds()                  { return 0.0; }
+
+    /** Returns the length of the plugin's tail in seconds (e.g. reverb decay). */
     virtual double getTailLength() const                { return 0.0; }
+
+    /** Returns true if this plugin supports sidechain input.
+        Default checks whether getChannelNames() reports more inputs than the main bus. */
     virtual bool canSidechain();
 
     //==============================================================================
+    // Parameters
+
+    /** Registers a new automatable parameter owned by this plugin. */
     AutomatableParameter* addParam (const juce::String& paramID, const juce::String& name, juce::NormalisableRange<float> valueRange);
+
+    /** Registers a new automatable parameter with custom string conversion functions. */
     AutomatableParameter* addParam (const juce::String& paramID, const juce::String& name, juce::NormalisableRange<float> valueRange,
                                     std::function<juce::String(float)> valueToStringFunction,
                                     std::function<float(const juce::String&)> stringToValueFunction);
 
+    //==============================================================================
+    // Sidechain routing
+
+    /** Returns the names of this plugin's input channels (convenience wrapper around getChannelNames). */
     juce::StringArray getInputChannelNames();
+
+    /** Returns the names of available sidechain sources for this plugin.
+        If allowNone is true, includes a "none" entry. */
     juce::StringArray getSidechainSourceNames (bool allowNone);
+
+    /** Sets the sidechain source by its display name. */
     void setSidechainSourceByName (const juce::String& name);
+
+    /** Returns the display name of the current sidechain source. */
     juce::String getSidechainSourceName();
+
+    /** Attempts to automatically determine a sensible sidechain routing. */
     void guessSidechainRouting();
 
     //==============================================================================
+    // Sidechain wiring
+    //
+    // Wires describe channel-level connections used for sidechain routing.
+
+    /** Represents a single channel-to-channel connection for sidechain routing. */
     struct Wire
     {
         Wire (const juce::ValueTree&, juce::UndoManager*);
@@ -266,7 +408,6 @@ public:
         juce::CachedValue<int> sourceChannelIndex, destChannelIndex;
     };
 
-    //==============================================================================
     int getNumWires() const;
     Wire* getWire (int index) const;
 
@@ -286,28 +427,40 @@ public:
     virtual bool hasNameForMidiBank (int bank, juce::String& name);
 
     //==============================================================================
+    // Placement constraints & status
+
     virtual bool canBeAddedToClip()                                     { return true; }
     virtual bool canBeAddedToRack()                                     { return true; }
     virtual bool canBeAddedToFolderTrack()                              { return false; }
     virtual bool canBeAddedToMaster()                                   { return true; }
     virtual bool canBeDisabled()                                        { return true; }
     virtual bool canBeMoved()                                           { return true; }
+
+    /** Returns true if this plugin requires a constant audio buffer size (no variable-size blocks). */
     virtual bool needsConstantBufferSize()                              { return false; }
 
-    /** for things like VSTs where the DLL is missing.    */
+    /** Returns true if the plugin's backing file/DLL is missing (e.g. uninstalled VST). */
     virtual bool isMissing()                                            { return false; }
 
-    /** Plugins can be disabled to avoid them crashing Edits. */
+    /** Returns true if the plugin has been forcibly disabled (e.g. after a crash). */
     virtual bool isDisabled()                                           { return false; }
 
+    /** Returns true if this plugin lives inside a RackType. */
     bool isInRack() const;
     juce::ReferenceCountedObjectPtr<RackType> getOwnerRackType() const;
 
+    /** Returns true if this plugin is being used as a clip effect. */
     bool isClipEffectPlugin() const;
 
+    /** Returns the underlying juce::AudioProcessor, if this plugin wraps one.
+        Only ExternalPlugin returns non-null by default. */
     virtual juce::AudioProcessor* getWrappedAudioProcessor() const      { return {}; }
 
     //==============================================================================
+    // Quick control
+    //
+    // A single parameter nominated for one-knob control surfaces.
+
     AutomatableParameter::Ptr getQuickControlParameter() const;
     void setQuickControlParameter (AutomatableParameter*);
 
@@ -326,23 +479,29 @@ public:
     void removeFromParent();
 
     //==============================================================================
+    // Ownership & graph position
+
     /** Returns the track if it's a track or clip plugin. */
     Track* getOwnerTrack() const;
 
     /** Returns the clip if that's what it's in. */
     Clip* getOwnerClip() const;
 
+    /** Returns the PluginList that contains this plugin. */
     PluginList* getOwnerList() const;
 
+    /** Returns the previous plugin in the same PluginList, or nullptr. */
     Ptr findPluginThatFeedsIntoThis() const;
+
+    /** Returns the next plugin in the same PluginList, or nullptr. */
     Ptr findPluginThatThisFeedsInto() const;
 
-    /** method from Selectable, that's been overridden here to also tell the edit that it's changed. */
+    /** Marks the plugin as changed and notifies the Edit. */
     void changed() override;
 
     //==============================================================================
     juce::Array<ReferencedItem> getReferencedItems() override;
-    void reassignReferencedItem (const ReferencedItem&, ProjectItemID newID, double newStartTime) override;
+    void reassignReferencedItem (const ReferencedItem&, ProjectItemRef newRef, double newStartTime) override;
 
     /** Called when ProjectItem sources are re-assigned so you can reload from the new source. */
     virtual void sourceMediaChanged()  {}
@@ -354,12 +513,21 @@ public:
     static void sortPlugins (std::vector<Plugin*>&);
 
     //==============================================================================
-    // setting a master plugin whose settings will be mirrored
-    bool setPluginToMirror (const Plugin::Ptr&); // fails if type is wrong
+    // Plugin mirroring
+    //
+    // Allows one plugin to mirror the state of another (e.g. linked EQs).
+
+    /** Sets a master plugin whose settings this one will mirror. Returns false if the types don't match. */
+    bool setPluginToMirror (const Plugin::Ptr&);
+
+    /** Called to pull state from the mirrored master. Override to apply format-specific state. */
     virtual void updateFromMirroredPluginIfNeeded (Plugin&) {}
+
+    /** Returns the plugin this one is mirroring, or nullptr. */
     Plugin::Ptr getMirroredPlugin() const;
 
     //==============================================================================
+    /** Filter categories used when enumerating plugins. */
     enum class Type
     {
         allPlugins,
@@ -368,8 +536,18 @@ public:
     };
 
     //==============================================================================
+    // Base class lifecycle helpers
+    //
+    // Call baseClassInitialise / baseClassDeinitialise instead of initialise / deinitialise
+    // directly, so the internal reference count stays in sync.
+
+    /** Returns true if baseClassInitialise() has not yet been called (or has been fully deinitialised). */
     bool baseClassNeedsInitialising() const noexcept        { return initialiseCount == 0; }
+
+    /** Prepares the plugin for playback. Calls initialise() and increments the internal init count. */
     void baseClassInitialise (const PluginInitialisationInfo&);
+
+    /** Tears down the plugin after playback. Calls deinitialise() when the init count reaches zero. */
     void baseClassDeinitialise();
 
     //==============================================================================
@@ -377,15 +555,29 @@ public:
     EditItemID getSidechainSourceID() const                 { return sidechainSourceID; }
 
     //==============================================================================
+    // Editor & window
+
+    /** Base class for plugin editor components (custom UIs shown in plugin windows). */
     struct EditorComponent  : public juce::Component
     {
         virtual bool allowWindowResizing() = 0;
         virtual juce::ComponentBoundsConstrainer* getBoundsConstrainer() = 0;
+
+        /** Returns true if the underlying editor can genuinely be resized to fit
+            an arbitrary host-provided size.
+
+            This is independent of allowWindowResizing(), which intentionally stays
+            conservative for floating plugin windows to avoid size hysteresis. It's
+            intended for hosts that embed the editor inline (e.g. a side panel) and
+            want to size it themselves. Defaults to false.
+        */
+        virtual bool isEditorResizable()                            { return false; }
     };
 
+    /** Creates a custom editor component for this plugin, or nullptr if none. */
     virtual std::unique_ptr<EditorComponent> createEditor()     { return {}; }
 
-    //==============================================================================
+    /** Persistent state for the plugin's editor window (position, visibility, etc.). */
     struct WindowState  : public PluginWindowState
     {
         WindowState (Plugin&);
@@ -399,11 +591,16 @@ public:
 
     std::unique_ptr<WindowState> windowState;
 
+    /** Shows the plugin's editor window, creating it if necessary. */
     void showWindowExplicitly();
+
+    /** Hides the plugin window during shutdown (avoids dangling references). */
     void hideWindowForShutdown();
 
     //==============================================================================
     Engine& engine;
+
+    /** The ValueTree that stores this plugin's persistent state within the Edit. */
     juce::ValueTree state;
 
     juce::UndoManager* getUndoManager() const noexcept;
@@ -414,13 +611,20 @@ public:
 
 protected:
     //==============================================================================
+    // Persistent state (backed by the ValueTree)
+
     juce::CachedValue<AtomicWrapper<bool>> enabled;
     juce::CachedValue<bool> frozen, processing;
     juce::CachedValue<juce::String> quickParamName;
+    juce::CachedValue<juce::String> customName;
     juce::CachedValue<EditItemID> masterPluginID, sidechainSourceID;
 
+    /** Current sample rate and block size, set during baseClassInitialise(). */
     double sampleRate = 44100.0;
     int blockSizeSamples = 512;
+
+    //==============================================================================
+    // ValueTree callbacks
 
     void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
     void valueTreeChanged() override;
@@ -429,9 +633,11 @@ protected:
     void valueTreeChildRemoved (juce::ValueTree&, juce::ValueTree&, int) override;
     void valueTreeParentChanged (juce::ValueTree&) override;
 
+    /** Called when the processing enabled state changes. */
     virtual void processingChanged();
 
     //==============================================================================
+    /** Helper to populate stereo left/right channel name arrays. */
     static void getLeftRightChannelNames (juce::StringArray* ins, juce::StringArray* outs);
     static void getLeftRightChannelNames (juce::StringArray* chans);
 
@@ -451,4 +657,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Plugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

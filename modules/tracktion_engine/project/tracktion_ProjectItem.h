@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Represents a file-based resource that is used in a project.
@@ -45,7 +44,8 @@ public:
     enum class SetNameMode
     {
         doDefault,
-        forceRename,
+        doDefaultSynchronous,
+        forceRenameSynchronous,
         forceNoRename
     };
 
@@ -54,7 +54,7 @@ public:
 
     //==============================================================================
     /** Loads a ProjectItem from a stream that was saved using writeToStream(). */
-    ProjectItem (Engine&, ProjectItemID, juce::InputStream*);
+    ProjectItem (Engine&, ProjectItemRef, juce::InputStream*);
 
     //==============================================================================
     /** Creates a ProjectItem with some settings. */
@@ -65,7 +65,12 @@ public:
                  const juce::String& file,
                  Category,
                  double length,
-                 ProjectItemID);
+                 ProjectItemRef);
+
+    /** Creates a folder-backed ProjectItem with an absolute source file path. */
+    ProjectItem (Engine&, const juce::File& sourceFile,
+                 const juce::String& type, const juce::String& name,
+                 Category, Project& ownerProject);
 
     ~ProjectItem() override;
 
@@ -74,7 +79,8 @@ public:
     void selectionStatusChanged (bool isNowSelected) override;
 
     //==============================================================================
-    ProjectItemID getID() const noexcept            { return itemID; }
+    /** Returns the ProjectItemRef that identifies this item. */
+    const ProjectItemRef& getProjectItemRef() const noexcept    { return itemRef; }
 
     juce::ReferenceCountedObjectPtr<Project> getProject() const;
 
@@ -94,7 +100,7 @@ public:
     bool isVideo() const noexcept                   { return getType() == videoItemType(); }
 
     const juce::String& getName() const;
-    void setName (const juce::String& name, SetNameMode mode);
+    void setName (const juce::String& name, SetNameMode);
 
     Category getCategory() const;
     void setCategory (Category cat);
@@ -104,7 +110,14 @@ public:
     void setNamedProperty (const juce::String& name, const juce::String& value);
 
     juce::String getDescription() const;
-    void setDescription (const juce::String& newDesc);
+
+    /** Sets the user-visible description text.
+        Pass juce::dontSendNotification to update it without broadcasting a change
+        - used when restoring a persisted description during a folder scan, where
+        firing a change would propagate to the owning project and retrigger the
+        scan. */
+    void setDescription (const juce::String& newDesc,
+                         juce::NotificationType = juce::sendNotification);
 
     /** optional set of interesting time markers, for wave files */
     juce::Array<TimePosition> getMarkedPoints() const;
@@ -113,19 +126,13 @@ public:
     /** copies the full description, categories, properties, etc. */
     void copyAllPropertiesFrom (const ProjectItem& other);
 
-    bool convertEditFile();
+    void convertEditFile (std::function<void (bool)> callback);
 
     double getLength() const;
     void setLength (double length);
 
     /** name of the project it's inside. */
     juce::String getProjectName() const;
-
-    /** Returns the file that should be used as a preview for this Edit. */
-    juce::File getEditPreviewFile() const;
-
-    /** Returns the file that should be used as a visual preview for this Edit. */
-    juce::File getEditThumbnailFile() const;
 
     //==============================================================================
     juce::File getSourceFile();
@@ -164,11 +171,14 @@ public:
 
     bool deleteSourceFile();
 
-    /** Updates the stored length value in this object. */
-    void verifyLength();
+    /** Updates the stored length value in this object.
+        Pass juce::dontSendNotification to update it without broadcasting a change
+        - a change here propagates to the owning project, which makes project list
+        UIs rebuild themselves. */
+    void verifyLength (juce::NotificationType = juce::sendNotification);
 
     /** used when moving to another project. */
-    void changeProjectId (int oldID, int newID);
+    void changeProjectId (ProjectID oldID, ProjectID newID);
 
     //==============================================================================
     void writeToStream (juce::OutputStream&) const;
@@ -181,13 +191,16 @@ public:
     Engine& engine; /**< The Engine instance this belongs to. */
 
 private:
+    friend class FileBasedProject;
+    friend class FolderBasedProject;
     friend class ProjectManager;
     friend class Project;
 
-    ProjectItemID itemID;
+    ProjectItemRef itemRef;
     juce::String type, objectName, description, file;
     double length = 0;
     juce::File sourceFile, newDstFile;
+    SafeSelectable<Project> ownerProject;
 
     void timerCallback() override;
     void handleAsyncUpdate() override;
@@ -197,4 +210,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProjectItem)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

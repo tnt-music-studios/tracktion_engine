@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class LevelMeterPlugin  : public Plugin,
                           private juce::Timer
@@ -31,7 +30,8 @@ public:
     bool canBeDisabled() override                       { return false; }
     bool shouldMeasureCpuUsage() const noexcept final   { return false; }
 
-    int getNumOutputChannelsGivenInputs (int numInputChannels) override     { return juce::jmin (numInputChannels, 2); }
+    int getNumOutputChannelsGivenInputs (int numInputChannels) override     { return numInputChannels; }
+    BusLayout getBusses() const override   { return BusLayout::singlePassThrough(); }
 
     juce::String getSelectableDescription() override                        { return TRANS("Level Meter Plugin"); }
     void initialise (const PluginInitialisationInfo&) override;
@@ -49,8 +49,14 @@ public:
 
 private:
     int controllerTrack = -1;
+    LevelMeasurer::Client controllerLevelClient;
+    std::vector<float> controllerGainsBuffer;
+
+   #if TRACKTION_UNIT_TESTS
+    friend struct LevelMeterPluginTestAccess;
+   #endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LevelMeterPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

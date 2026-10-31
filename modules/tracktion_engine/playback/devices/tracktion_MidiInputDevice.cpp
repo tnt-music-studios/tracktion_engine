@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 //==============================================================================
@@ -214,7 +213,7 @@ private:
     {
         {
             const juce::ScopedLock sl (pendingLock);
-            pendingMessages.add ({ number, channel, value / 127.0f });
+            pendingMessages.add ({ number, channel, static_cast<float> (value) / 127.0f });
         }
 
         triggerAsyncUpdate();
@@ -330,8 +329,8 @@ struct RetrospectiveMidiBuffer
 };
 
 //==============================================================================
-MidiInputDevice::MidiInputDevice (Engine& e, juce::String deviceType, juce::String deviceName, juce::String deviceIDToUse)
-   : InputDevice (e, std::move (deviceType), std::move (deviceName), std::move (deviceIDToUse))
+MidiInputDevice::MidiInputDevice (Engine& e, juce::String deviceName, juce::String deviceIDToUse)
+   : InputDevice (e, std::move (deviceName), std::move (deviceIDToUse))
 {
     enabled = true;
     levelMeasurer.setShowMidi (true);
@@ -1460,11 +1459,7 @@ public:
                     {
                         if (auto slot = getFreeSlot (*track))
                         {
-                            mc->setUsesProxy (false);
-                            mc->setStart (0_tp, false, true);
-
-                            if (! mc->isLooping ())
-                                mc->setLoopRangeBeats (mc->getEditBeatRange());
+                            prepareClipForLauncher (*mc);
 
                             mc->removeFromParent();
                             slot->setClip (mc);
@@ -1644,4 +1639,4 @@ void MidiInputDevice::sendMessageToInstances (const juce::MidiMessage& message, 
             warnOfWasted (this);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class AutomatableParameter   : public juce::ReferenceCountedObject,
                                public Selectable,
@@ -236,6 +235,12 @@ public:
         const AutomatableParameter& parameter;
     };
 
+    /** @internal
+        Connects an AutomationCurveModifier's assignment that was added before the
+        modifier was created, e.g. by a redo that re-adds them in that order.
+    */
+    void automationCurveModifierCreated (EditItemID automationCurveModifierID);
+
     /** @internal */
     void resetRecordingStatus();
     /** @internal */
@@ -444,4 +449,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AutomationIterator)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

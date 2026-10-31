@@ -7,8 +7,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 namespace Distortion
@@ -80,7 +79,7 @@ public:
         float pos = std::max (1.0f, atTime * (sampleRate - 1));
 
         int intPos = (int) std::floor (pos);
-        float f = pos - intPos;
+        float f = pos - float (intPos);
 
         int n1 = currentPos - intPos;
         while (n1 < 0)
@@ -221,7 +220,7 @@ public:
                 ph += speed;
 
                 int intSweepPos = juce::roundToInt (sweep);
-                const float interp = sweep - intSweepPos;
+                const float interp = sweep - float (intSweepPos);
                 intSweepPos = bufPos + lengthInSamples - intSweepPos;
 
                 const float out = buf[(intSweepPos - 1) % lengthInSamples] * interp + buf[intSweepPos % lengthInSamples] * (1.0f - interp);
@@ -1261,7 +1260,7 @@ float FourOscPlugin::getLevel (int channel)
     auto& peak = levels[channel];
 
     auto elapsedMilliseconds = std::max (0, int (juce::Time::getApproximateMillisecondCounter() - peak.time) - 50);
-    float currentLevel = peak.dB - (48.0f * elapsedMilliseconds / 1000.0f);
+    float currentLevel = peak.dB - (48.0f * float (elapsedMilliseconds) / 1000.0f);
 
     auto latest = getAndClearAudioLevel (channel);
 
@@ -1346,7 +1345,7 @@ void FourOscPlugin::valueTreeChildRemoved (juce::ValueTree& v, juce::ValueTree& 
 
 void FourOscPlugin::handleController (int, int controllerNumber, int controllerValue)
 {
-    controllerValues[controllerNumber] = controllerValue / 127.0f;
+    controllerValues[controllerNumber] = float (controllerValue) / 127.0f;
 }
 
 void FourOscPlugin::handleAsyncUpdate()
@@ -1487,7 +1486,10 @@ void FourOscPlugin::applyToBuffer (const PluginRenderContext& fc)
             {
                 for (auto m : *fc.bufferForMidiMessages)
                 {
-                    int midiPos = juce::roundToInt (m.getTimeStamp() * getSampleRate());
+                    // Clamp to the buffer so a timestamp that rounds up to its end isn't dropped
+                    int midiPos = juce::jlimit (fc.bufferStartSample,
+                                                fc.bufferStartSample + fc.bufferNumSamples - 1,
+                                                juce::roundToInt (m.getTimeStamp() * getSampleRate()));
                     if (midiPos >= pos && midiPos < pos + thisBlock)
                         midi.addEvent (m, midiPos - pos);
                 }
@@ -1805,4 +1807,4 @@ float FourOscPlugin::paramValue (AutomatableParameter::Ptr param)
     return param->valueRange.convertFrom0to1 (smoothItr->second.getCurrentValue());
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

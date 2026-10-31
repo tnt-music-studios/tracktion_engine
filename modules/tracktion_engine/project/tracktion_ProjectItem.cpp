@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static const char* slashEscapeSeq = "[[slash]]";
 
@@ -211,11 +210,11 @@ ProjectItem::ProjectItem (Engine& e,
                           const juce::String& name_, const juce::String& type_,
                           const juce::String& desc_, const juce::String& file_,
                           ProjectItem::Category category_,
-                          double length_, ProjectItemID id)
+                          double length_, ProjectItemRef ref)
    : Selectable(),
      ReferenceCountedObject(),
      engine (e),
-     itemID (id),
+     itemRef (ref),
      type (type_),
      objectName (name_),
      description (desc_),
@@ -235,8 +234,27 @@ static juce::String readStringAutoDetectingUTF (juce::InputStream& in)
     return mo.toString();
 }
 
-ProjectItem::ProjectItem (Engine& e, ProjectItemID id, juce::InputStream* in)
-   : engine (e), itemID (id)
+ProjectItem::ProjectItem (Engine& e, const juce::File& src,
+                          const juce::String& type_, const juce::String& name_,
+                          Category category_, Project& owner)
+   : engine (e),
+     itemRef (ProjectItemRef (src.getFullPathName(), owner)),
+     type (type_),
+     objectName (name_),
+     description ("|MediaObjectCategory|" + juce::String ((int) category_)),
+     file (src.getFullPathName()),
+     sourceFile (src),
+     ownerProject (&owner)
+{
+    // Category is encoded directly into 'description' above rather than going
+    // via setCategory()/sendChange(). Freshly-scanned items have no listeners,
+    // and firing a change here would propagate to the owning Project and
+    // retrigger any UI that reloads on project-changed notifications, creating
+    // an infinite scan/reload cycle for folder-based projects.
+}
+
+ProjectItem::ProjectItem (Engine& e, ProjectItemRef ref, juce::InputStream* in)
+   : engine (e), itemRef (ref)
 {
     objectName  = readStringAutoDetectingUTF (*in);
     type        = readStringAutoDetectingUTF (*in);
@@ -278,8 +296,11 @@ juce::String ProjectItem::getSelectableDescription()
 
 void ProjectItem::selectionStatusChanged (bool isNowSelected)
 {
+    // Update the length quietly: broadcasting a change here dirties the whole
+    // project, which makes the project tab rebuild its lists and lose the
+    // selection that's being made
     if (isNowSelected && getLength() == 0)
-        verifyLength();
+        verifyLength (juce::dontSendNotification);
 }
 
 //==============================================================================
@@ -348,6 +369,8 @@ void ProjectItem::setSourceFile (const juce::File& f, FileMode mode)
 {
     if (auto pp = getProject())
     {
+        auto oldSourceFile = getSourceFile();
+
         auto projectDir = pp->getDefaultDirectory();
         bool relative = false;
 
@@ -361,12 +384,23 @@ void ProjectItem::setSourceFile (const juce::File& f, FileMode mode)
         else
             file = f.getFullPathName();
 
+        if (! itemRef.isProjectItemID())
+        {
+            if (ownerProject)
+                itemRef = ProjectItemRef (f.getFullPathName(), *ownerProject);
+            else
+                jassertfalse;
+        }
+
         sourceFile = juce::File();
 
         changed();
         pp->changed();
 
         triggerAsyncUpdate();
+
+        if (oldSourceFile != juce::File() && oldSourceFile != f)
+            pp->sourceFileMoved (oldSourceFile, f);
     }
 }
 
@@ -414,46 +448,27 @@ juce::String ProjectItem::getFileName() const
     return standardised;
 }
 
-juce::File ProjectItem::getEditPreviewFile() const
-{
-    jassert (isEdit());
-
-    if (auto p = getProject())
-    {
-        auto dir = engine.getTemporaryFileManager().getTempDirectory().getChildFile ("previews");
-        dir.createDirectory();
-
-        return dir.getChildFile ("preview_" + getID().toStringSuitableForFilename()).withFileExtension ("ogg");
-    }
-
-    return {};
-}
-
-juce::File ProjectItem::getEditThumbnailFile() const
-{
-    jassert (isEdit());
-
-    if (auto p = getProject())
-    {
-        auto dir = engine.getTemporaryFileManager().getTempDirectory().getChildFile ("previews");
-        dir.createDirectory();
-
-        return dir.getChildFile ("preview_" + getID().toStringSuitableForFilename()).withFileExtension ("png");
-    }
-
-    return {};
-}
-
 //==============================================================================
 Project::Ptr ProjectItem::getProject() const
 {
-    return engine.getProjectManager().getProject (getID().getProjectID());
+    if (auto p = ownerProject.get())
+        return p;
+
+    return engine.getProjectManager().getProject (itemRef.getProjectID());
 }
 
 bool ProjectItem::hasBeenDeleted() const
 {
     if (auto p = getProject())
-        return p->getProjectItemForID (getID()) == nullptr;
+    {
+        if (itemRef.getProjectItemID().has_value())
+            return p->getProjectItemFor (itemRef) == nullptr;
+
+        if (itemRef.isValid())
+            return ! itemRef.resolve (engine, p->getProjectFile()).existsAsFile();
+
+        return false;
+    }
 
     return true;
 }
@@ -478,24 +493,29 @@ void ProjectItem::setName (const juce::String& n, SetNameMode mode)
             auto src = getSourceFile();
 
             bool shouldRename = false;
+            const bool isSync = (mode == SetNameMode::doDefaultSynchronous
+                              || mode == SetNameMode::forceRenameSynchronous);
 
             auto mrm = (ProjectItem::RenameMode) static_cast<int> (engine.getPropertyStorage().getProperty (SettingID::renameMode, (int) RenameMode::local));
 
-            if (mode == SetNameMode::forceNoRename)     shouldRename = false;
-            else if (mode == SetNameMode::forceRename)  shouldRename = true;
-            else if (mrm == RenameMode::always)         shouldRename = true;
-            else if (mrm == RenameMode::never)          shouldRename = false;
-            else if (mrm == RenameMode::local)          shouldRename = src.isAChildOf (pp->getDefaultDirectory());
+            if (mode == SetNameMode::forceNoRename)                 shouldRename = false;
+            else if (mode == SetNameMode::forceRenameSynchronous)   shouldRename = true;
+            else if (mrm == RenameMode::always)                     shouldRename = true;
+            else if (mrm == RenameMode::never)                      shouldRename = false;
+            else if (mrm == RenameMode::local)                      shouldRename = src.isAChildOf (pp->getDefaultDirectory());
 
             if (shouldRename)
             {
                 // Don't use "withFileExtension" here as it will strip any name text after a period "."
                 const auto legalFileName = juce::File::createLegalFileName (n);
                 newDstFile = src.getParentDirectory().getChildFile (legalFileName + src.getFileExtension());
-                assert (newDstFile.hasFileExtension (src.getFileExtension()));
-                assert (newDstFile.getFileNameWithoutExtension() == legalFileName);
+                jassert (newDstFile.hasFileExtension (src.getFileExtension()));
+                jassert (newDstFile.getFileNameWithoutExtension() == legalFileName);
 
-                startTimer (1);
+                if (isSync)
+                    timerCallback();
+                else
+                    startTimer (1);
             }
             else
             {
@@ -510,6 +530,8 @@ void ProjectItem::setName (const juce::String& n, SetNameMode mode)
 void ProjectItem::timerCallback()
 {
     stopTimer();
+
+    Ptr selfRef (this);  // prevent destruction during setSourceFile -> reload
 
     auto src = getSourceFile();
     auto dst = getNonExistentSiblingWithIncrementedNumberSuffix (newDstFile, false);
@@ -558,7 +580,7 @@ juce::String ProjectItem::getDescription() const
     return description.upToFirstOccurrenceOf ("|", false, false);
 }
 
-void ProjectItem::setDescription (const juce::String& newDesc)
+void ProjectItem::setDescription (const juce::String& newDesc, juce::NotificationType notify)
 {
     if (newDesc != getDescription())
     {
@@ -568,7 +590,8 @@ void ProjectItem::setDescription (const juce::String& newDesc)
         else
             description = newDesc.removeCharacters ("|");
 
-        sendChange();
+        if (notify != juce::dontSendNotification)
+            sendChange();
     }
 }
 
@@ -647,12 +670,17 @@ void ProjectItem::setMarkedPoints (const juce::Array<TimePosition>& points)
     }
 }
 
-bool ProjectItem::convertEditFile()
+void ProjectItem::convertEditFile (std::function<void (bool)> callback)
 {
     auto f = getSourceFile();
 
     if (f.hasFileExtension (editFileSuffix))
-        return true;
+    {
+        if (callback)
+            callback (true);
+
+        return;
+    }
 
     auto newFile = f.withFileExtension (editFileSuffix);
 
@@ -661,15 +689,49 @@ bool ProjectItem::convertEditFile()
         juce::String m (TRANS("There appears to already be a converted Edit in the project folder."));
         m << "\n" << TRANS("Do you want to use this, or create a new conversion?");
 
-        if (engine.getUIBehaviour().showOkCancelAlertBox (TRANS("Converted Edit Already Exists"), m,
-                                                          TRANS("Use Existing"),
-                                                          TRANS("Create New")))
-        {
-            setSourceFile (newFile);
-            return true;
-        }
+        auto safeThis = makeSafeRef (*this);
 
-        newFile.copyFileTo (newFile.getNonexistentSibling());
+        engine.getUIBehaviour().showOkCancelAlertBoxAsync (TRANS("Converted Edit Already Exists"), m,
+                                                           TRANS("Use Existing"),
+                                                           TRANS("Create New"),
+                                                           [safeThis, f, newFile, callback] (bool useExisting) mutable
+                                                           {
+                                                               if (auto self = safeThis.get())
+                                                               {
+                                                                   if (useExisting)
+                                                                   {
+                                                                       self->setSourceFile (newFile);
+
+                                                                       if (callback)
+                                                                           callback (true);
+
+                                                                       return;
+                                                                   }
+
+                                                                   newFile.copyFileTo (newFile.getNonexistentSibling());
+
+                                                                   if (f.existsAsFile() && f != newFile)
+                                                                   {
+                                                                       if (! f.copyFileTo (newFile))
+                                                                       {
+                                                                           self->engine.getUIBehaviour().showWarningAlert (TRANS("Unable to Open Edit"),
+                                                                                                                           TRANS("The selected Edit file could not be converted to the current project format.")
+                                                                                                                             + "\n\n"
+                                                                                                                             + TRANS("Please ensure you can write to the Edit directory and try again."));
+                                                                           if (callback)
+                                                                               callback (false);
+
+                                                                           return;
+                                                                       }
+
+                                                                       self->setSourceFile (newFile);
+                                                                   }
+
+                                                                   if (callback)
+                                                                       callback (true);
+                                                               }
+                                                           });
+        return;
     }
 
     if (f.existsAsFile() && f != newFile)
@@ -680,13 +742,17 @@ bool ProjectItem::convertEditFile()
                                                       TRANS("The selected Edit file could not be converted to the current project format.")
                                                         + "\n\n"
                                                         + TRANS("Please ensure you can write to the Edit directory and try again."));
-            return false;
+            if (callback)
+                callback (false);
+
+            return;
         }
 
         setSourceFile (newFile);
     }
 
-    return true;
+    if (callback)
+        callback (true);
 }
 
 double ProjectItem::getLength() const
@@ -712,7 +778,7 @@ juce::String ProjectItem::getProjectName() const
 }
 
 //==============================================================================
-void ProjectItem::verifyLength()
+void ProjectItem::verifyLength (juce::NotificationType notification)
 {
     double len = 0.0;
 
@@ -741,7 +807,12 @@ void ProjectItem::verifyLength()
     }
 
     if (len > 0.001 && len != getLength())
-        setLength (len);
+    {
+        if (notification == juce::dontSendNotification)
+            length = len;
+        else
+            setLength (len);
+    }
 }
 
 //==============================================================================
@@ -812,19 +883,19 @@ bool ProjectItem::deleteSourceFile()
 }
 
 //==============================================================================
-void ProjectItem::changeProjectId (int oldID, int newID)
+void ProjectItem::changeProjectId (ProjectID oldID, ProjectID newID)
 {
-    if (getID().getProjectID() == oldID)
-        itemID = ProjectItemID (getID().getItemID(), newID);
+    if (auto pid = itemRef.getProjectItemID(); pid && pid->getProjectID() == oldID)
+        itemRef = ProjectItemID (pid->getItemID(), newID);
 
     if (isEdit())
     {
-        auto ed = loadEditForExamining (engine.getProjectManager(), getID());
+        auto ed = loadEditForExamining (engine.getProjectManager(), itemRef);
 
         for (auto exp : Exportable::addAllExportables (*ed))
             for (auto& item : exp->getReferencedItems())
-                 if (item.itemID.getProjectID() == oldID)
-                     exp->reassignReferencedItem (item, item.itemID.withNewProjectID (newID), 0.0);
+                if (auto pid2 = item.itemRef.getProjectItemID(); pid2 && pid2->getProjectID() == oldID)
+                    exp->reassignReferencedItem (item, pid2->withNewProjectID (newID), 0.0);
 
         EditFileOperations (*ed).save (false, true, false);
     }
@@ -927,4 +998,4 @@ juce::StringArray ProjectItem::getSearchTokens() const
     return toks;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -9,8 +9,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace
 {
@@ -25,7 +24,7 @@ namespace
             return {};
 
         auto ratio = r->sampleRate / targetSampleRate;
-        auto targetLength = (int) (r->lengthInSamples / ratio);
+        auto targetLength = (int) (static_cast<double> (r->lengthInSamples) / ratio);
 
         juce::AudioBuffer<float> buf ((int) r->numChannels, targetLength);
 
@@ -271,7 +270,8 @@ tracktion::graph::NodeProperties ClickNode::getNodeProperties()
     props.hasAudio = ! generateMidi;
     props.hasMidi = generateMidi;
     props.numberOfChannels = numChannels;
-    props.nodeID = (size_t) edit.getProjectItemID().getRawID();
+    auto pid = edit.getProjectItemRef().getProjectItemID();
+    props.nodeID = pid ? (size_t) pid->getRawID() : size_t (0);
 
     return props;
 }
@@ -358,4 +358,4 @@ namespace Click
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

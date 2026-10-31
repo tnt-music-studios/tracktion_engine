@@ -8,8 +8,52 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine {
+
+//==============================================================================
+/** Holds a playhead for an AudioClipBase.
+    This is automatically updated by the playback graph so the UI should only read from it.
+    The position is the time relative to the clip's source file (i.e. from the offset to
+    the clip end, wrapped within the loop section when looping).
+    [[ thread_safe ]]
+*/
+struct AudioClipPlayhead
 {
+    /** Returns the last played position relative to the clip's source if it has been
+        updated within the staleness window (default 100ms).
+        If no position has been written recently, returns std::nullopt so the UI can hide
+        the playhead when the clip stops playing.
+    */
+    std::optional<TimePosition> getPosition (uint32_t maxAgeMs = 50) const
+    {
+        const auto s = state.load();
+
+        if (! s.position.has_value())
+            return std::nullopt;
+
+        if (juce::Time::getMillisecondCounter() - s.lastUpdateMs > maxAgeMs)
+            return std::nullopt;
+
+        return s.position;
+    }
+
+    /** Sets the current played position and stamps it with the current time.
+        This is called from the playback graph and shouldn't be called by user code.
+    */
+    void setPosition (std::optional<TimePosition> p)
+    {
+        state.store ({ p, juce::Time::getMillisecondCounter() });
+    }
+
+private:
+    struct State
+    {
+        std::optional<TimePosition> position;
+        uint32_t lastUpdateMs = 0;
+    };
+
+    std::atomic<State> state;
+};
 
 //==============================================================================
 /**
@@ -148,19 +192,39 @@ public:
     /** Returns a LiveClipLevel which can be used to read the gain, pan and mute statuses. */
     LiveClipLevel getLiveClipLevel();
 
+    /** Returns a shared playhead which is updated by the playback graph to track the
+        current position being played within the clip's source file.
+        This can be used by the UI to draw a transport indicator over the clip's waveform.
+    */
+    std::shared_ptr<AudioClipPlayhead> getPlayhead() const noexcept    { return playhead; }
+
     //==============================================================================
-    /** Enables the left channel of the clip. */
-    void setLeftChannelActive (bool);
-    /** Returns whether the left channel of the clip is enabled. */
-    bool isLeftChannelActive() const;
+    /** Returns the source file's channel configuration.
+        This represents all available channels in the source audio file.
+    */
+    ChannelConfiguration getSourceChannelConfiguration();
 
-    /** Enables the right channel of the clip. */
-    void setRightChannelActive (bool);
-    /** Returns whether the right channel of the clip is enabled. */
-    bool isRightChannelActive() const;
+    /** Returns which channels are active (selected for playback).
+        Only active channels will be played back.
+    */
+    ChannelConfiguration getActiveChannelConfiguration();
 
-    /** Returns the layout of the active channels. */
-    juce::AudioChannelSet getActiveChannels() const     { return activeChannels; }
+    /** Sets which channels are active for playback.
+        @param config The channel configuration to use for playback
+    */
+    void setActiveChannelConfiguration (const ChannelConfiguration& config);
+
+    /** Returns the channel configuration output by this clip.
+        This considers clip effects and returns the final output channel layout.
+        For now, this returns the same as getActiveChannelConfiguration().
+    */
+    ChannelConfiguration getOutputChannelConfiguration();
+
+    /** Returns the layout of the active channels as a JUCE AudioChannelSet.
+        @deprecated Use getActiveChannelConfiguration() instead.
+    */
+    [[deprecated ("Use getActiveChannelConfiguration() instead")]]
+    juce::AudioChannelSet getActiveChannels()            { return getActiveChannelConfiguration().toChannelSet(); }
 
     //==============================================================================
     /** Sets the fade in duration in seconds.
@@ -243,13 +307,21 @@ public:
     /** Returns the LoopInfo being used to describe this clip. */
     LoopInfo& getLoopInfo()                             { return loopInfo; }
 
-    /** Returns the loop range in seconds. */
+    /** Returns the loop range in seconds.
+
+        With auto tempo on, the loop is stored in beats and this converts it with the
+        single tempo at the clip start, as do getLoopStart(), getLoopLength() and
+        setLoopRange(). That keeps setLoopRange (getLoopRange()) from changing the loop,
+        but if the tempo changes inside the loop the seconds won't match how long it
+        plays on the timeline. Use getLoopRangeBeats() and setLoopRangeBeats() when the
+        exact loop matters.
+    */
     TimeRange getLoopRange() const;
 
     /** @internal */
     bool canLoop() const override;
     /** @internal */
-    bool isLooping() const override                     { return getAutoTempo() ? (loopLengthBeats > BeatDuration()) : (loopLength > TimeDuration()); }
+    bool isLooping() const override                     { return hasLoop (getAutoTempo()); }
     /** @internal */
     bool beatBasedLooping() const override              { return isLooping() && getAutoTempo(); }
     /** @internal */
@@ -430,8 +502,8 @@ public:
     void snapToOriginalBWavTime();
 
     //==============================================================================
-    /** Returns the ProjectItemID of the clip's takes. */
-    virtual juce::Array<ProjectItemID> getTakes() const;
+    /** Returns the ProjectItemRefs of the clip's takes. */
+    virtual juce::Array<ProjectItemRef> getTakes() const;
 
     //==============================================================================
     /** Returns an empty string if this plugin can be added, otherwise an error message
@@ -491,6 +563,19 @@ public:
     /** Triggers creation of a new proxy file if one is required. */
     void beginRenderingNewProxyIfNeeded();
 
+    /** Returns true if the playback file is one the clip is going to generate,
+        i.e. a proxy or a rendered source.
+
+        A playback file that doesn't exist yet is normal for these clips and will
+        appear once the render completes, so callers should wait for it. If this
+        returns false and the playback file still can't be read, the source has
+        been deleted, moved or is otherwise unreadable and will never appear.
+
+        N.B. Call this after beginRenderingNewProxyIfNeeded so any render that is
+        needed has been started.
+    */
+    bool isGeneratingPlaybackFile();
+
     /** Returns an AudioSegmentList describing this file if it is using auto-tempo.
         This can be useful for drawing waveforms.
         [[ message_thread ]]
@@ -521,6 +606,11 @@ public:
     AudioClipBase* getOverlappingClip (ClipDirection) const;
 
     //==============================================================================
+    /** Stores the ARA plugin's current edits (e.g. Melodyne notes) as an archive in
+        the clip's state tree, so they can be restored by setupARA() after the clip
+        is re-created (undo of a deletion, switching ARA mode off and on, etc). */
+    void captureARAStateToValueTree();
+
     /** Releases the ARA proxy. Called during track destruction to ensure
         ARA cleanup happens while the track is still alive. */
     void tearDownARA();
@@ -534,6 +624,12 @@ public:
 
     /** Returns true if this clip is using an ARA plugin. */
     bool isUsingARA() const;
+
+    /** @internal Keeps the ARA plugin's editor view following the arrangement selection. */
+    void selectionStatusChanged (bool isNowSelected) override;
+
+    TimeDuration getHead() const override;
+    TimeDuration getTail() const override;
 
     /** @deprecated Use isUsingARA() instead. */
     [[deprecated("Use isUsingARA() instead")]]
@@ -604,7 +700,7 @@ public:
     /** @internal */
     juce::Array<ReferencedItem> getReferencedItems() override;
     /** @internal */
-    void reassignReferencedItem (const ReferencedItem&, ProjectItemID newID, double newStartTime) override;
+    void reassignReferencedItem (const ReferencedItem&, ProjectItemRef newRef, double newStartTime) override;
 
     //==============================================================================
     /** @internal */
@@ -634,6 +730,7 @@ protected:
 
     //==============================================================================
     std::shared_ptr<ClipLevel> level { std::make_shared<ClipLevel>() };
+    std::shared_ptr<AudioClipPlayhead> playhead { std::make_shared<AudioClipPlayhead>() };
     juce::CachedValue<juce::String> channels;
 
     juce::CachedValue<TimeDuration> fadeIn, fadeOut;
@@ -662,9 +759,6 @@ protected:
     mutable std::unique_ptr<AudioSegmentList> audioSegmentList;
     std::unique_ptr<ClipEffects> clipEffects;
     mutable AsyncFunctionCaller asyncFunctionCaller;
-
-    juce::AudioChannelSet activeChannels;
-    void updateLeftRightChannelActivenessFlags();
 
     PluginList pluginList;
 
@@ -707,6 +801,9 @@ private:
     void updateReversedState();
     void updateAutoTempoState();
     void updateClipEffectsState();
+
+    /** Returns true if the beat-based or time-based loop representation holds a loop. */
+    bool hasLoop (bool beatBased) const     { return beatBased ? (loopLengthBeats > BeatDuration()) : (loopLength > TimeDuration()); }
 
     enum { updateCrossfadesFlag = 0, updateCrossfadesOverlappedFlag = 1 };
     void updateAutoCrossfades (bool updateOverlapped);
@@ -753,7 +850,7 @@ inline void hideMelodyneWindow (AudioClipBase& c) { hideARAWindow (c); }
 [[deprecated("Use araConvertToMIDI() instead")]]
 inline void melodyneConvertToMIDI (AudioClipBase& c) { araConvertToMIDI (c); }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {

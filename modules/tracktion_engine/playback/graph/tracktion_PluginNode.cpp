@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace
 {
@@ -63,12 +62,34 @@ tracktion::graph::NodeProperties PluginNode::getNodeProperties()
 
     auto props = input->getNodeProperties();
 
-    // Assume a stereo output here to corretly initialise plugins
-    // We might need to modify this to return a number of channels passed as an argument if there are differences with mono renders
-    props.numberOfChannels = juce::jmax (2, props.numberOfChannels, plugin->getNumOutputChannelsGivenInputs (std::max (2, props.numberOfChannels)));
+    // Use the actual input channel count — channel conversion (e.g. mono→stereo) is handled
+    // upstream by createNodeForPlugin inserting a ChannelRemappingNode when needed
+    props.numberOfChannels = std::max (props.numberOfChannels, plugin->getNumOutputChannelsGivenInputs (props.numberOfChannels));
+
+    // Ensure audio plugins always get at least their declared minimum channel count,
+    // even when the input node reports 0 channels (e.g. unconnected rack plugin).
+    // Only truly MIDI-only plugins (no audio in, no audio out) are excluded.
+    if (plugin->takesAudioInput() || plugin->producesAudioWhenNoAudioInput())
+    {
+        const auto pluginBusses = plugin->getBusses();
+
+        if (! pluginBusses.inputs.empty())
+            props.numberOfChannels = std::max (props.numberOfChannels,
+                                               pluginBusses.inputs.front().getNumChannels());
+
+        if (! pluginBusses.outputs.empty())
+        {
+            int totalOutputChans = 0;
+
+            for (const auto& bus : pluginBusses.outputs)
+                totalOutputChans += bus.getNumChannels();
+
+            props.numberOfChannels = std::max (props.numberOfChannels, totalOutputChans);
+        }
+    }
 
     if (maxNumChannels > 0)
-        props.numberOfChannels = std::min (maxNumChannels, props.numberOfChannels);
+        props.numberOfChannels = std::min (props.numberOfChannels, maxNumChannels);
 
     props.hasAudio = props.hasAudio || plugin->producesAudioWhenNoAudioInput();
     props.hasMidi  = props.hasMidi || plugin->takesMidiInput();
@@ -117,7 +138,7 @@ void PluginNode::prepareToPlay (const tracktion::graph::PlaybackInitialisationIn
 
     isPrepared = true;
 
-    if (info.enableNodeMemorySharing && input->numOutputNodes == 1)
+    if (info.enableNodeMemorySharing && input->numOutputNodes == 1 && input->canShareOutputBuffer())
     {
         const auto inputNumChannels = input->getNodeProperties().numberOfChannels;
         const auto desiredNumChannels = props.numberOfChannels;
@@ -177,73 +198,76 @@ void PluginNode::process (ProcessContext& pc)
     auto numSamplesLeft = blockNumSamples;
 
     bool shouldProcessPlugin = canProcessBypassed || plugin->isEnabled();
-    bool isAllNotesOff = inputBuffers.midi.isAllNotesOff;
-
-    if (playHeadState.didPlayheadJump())
-        isAllNotesOff = true;
+    bool isAllNotesOff = inputBuffers.midi.isAllNotesOff || playHeadState.didPlayheadJump();
 
     if (trackMuteState != nullptr)
     {
         if (! trackMuteState->shouldTrackContentsBeProcessed())
         {
             shouldProcessPlugin = shouldProcessPlugin && trackMuteState->shouldTrackBeAudible();
-
-            if (trackMuteState->wasJustMuted())
-                isAllNotesOff = true;
+            isAllNotesOff = isAllNotesOff || trackMuteState->wasJustMuted();
         }
     }
 
-    const auto blockTimeRange = getEditTimeRange();
-    auto inputMidiIter = inputBuffers.midi.begin();
-
-    // Process in blocks
-    for (int subBlockNum = 0;; ++subBlockNum)
+    // Fast path for disabled plugins: skip sub-block loop and pass MIDI straight through
+    if (! shouldProcessPlugin)
     {
-        auto numSamplesThisBlock = std::min (subBlockSize, numSamplesLeft);
+        outputBuffers.midi.copyFrom (inputBuffers.midi);
+        outputBuffers.midi.isAllNotesOff = isAllNotesOff;
+    }
+    else
+    {
+        const auto blockTimeRange = getEditTimeRange();
+        auto inputMidiIter = inputBuffers.midi.begin();
 
-        auto outputAudioBuffer = toAudioBuffer (outputAudioView.getFrameRange (frameRangeWithStartAndLength (numSamplesDone, numSamplesThisBlock)));
-
-        const auto blockPropStart = (numSamplesDone / (double) blockNumSamples);
-        const auto blockPropEnd = ((numSamplesDone + numSamplesThisBlock) / (double) blockNumSamples);
-        const auto subBlockTimeRange = TimeRange (toPosition (blockTimeRange.getLength()) * blockPropStart,
-                                                  toPosition (blockTimeRange.getLength()) * blockPropEnd);
-
-        midiMessageArray.clear();
-        midiMessageArray.isAllNotesOff = isAllNotesOff;
-
-        for (auto end = inputBuffers.midi.end(); inputMidiIter != end; ++inputMidiIter)
+        // Process in blocks
+        for (int subBlockNum = 0;; ++subBlockNum)
         {
-            const auto timestamp = inputMidiIter->getTimeStamp();
+            auto numSamplesThisBlock = std::min (subBlockSize, numSamplesLeft);
 
-            // If the time range is empty, we need to pass through all the MIDI as it means the playhead is stopped
-            if (! subBlockTimeRange.isEmpty()
-                && timestamp >= subBlockTimeRange.getEnd().inSeconds())
-               break;
+            auto outputAudioBuffer = toAudioBuffer (outputAudioView.getFrameRange (frameRangeWithStartAndLength (numSamplesDone, numSamplesThisBlock)));
 
-            midiMessageArray.addMidiMessage (*inputMidiIter,
-                                             timestamp - subBlockTimeRange.getStart().inSeconds(),
-                                             inputMidiIter->mpeSourceID);
-        }
+            const auto blockPropStart = (numSamplesDone / (double) blockNumSamples);
+            const auto blockPropEnd = ((numSamplesDone + numSamplesThisBlock) / (double) blockNumSamples);
+            const auto subBlockTimeRange = TimeRange (toPosition (blockTimeRange.getLength()) * blockPropStart,
+                                                      toPosition (blockTimeRange.getLength()) * blockPropEnd);
 
-        // Process the plugin
-        if (shouldProcessPlugin)
+            midiMessageArray.clear();
+            midiMessageArray.isAllNotesOff = isAllNotesOff;
+
+            for (auto end = inputBuffers.midi.end(); inputMidiIter != end; ++inputMidiIter)
+            {
+                const auto timestamp = inputMidiIter->getTimeStamp();
+
+                // If the time range is empty, we need to pass through all the MIDI as it means the playhead is stopped
+                if (! subBlockTimeRange.isEmpty()
+                    && timestamp >= subBlockTimeRange.getEnd().inSeconds())
+                   break;
+
+                midiMessageArray.addMidiMessage (*inputMidiIter,
+                                                 timestamp - subBlockTimeRange.getStart().inSeconds(),
+                                                 inputMidiIter->mpeSourceID);
+            }
+
+            // Process the plugin
             plugin->applyToBufferWithAutomation (getPluginRenderContext ({ blockTimeRange.getStart() + toDuration (subBlockTimeRange.getStart()),
                                                                            blockTimeRange.getStart() + toDuration (subBlockTimeRange.getEnd()) },
                                                                          outputAudioBuffer));
 
-        // Then copy the buffers to the outputs
-        if (subBlockNum == 0)
-            outputBuffers.midi.swapWith (midiMessageArray);
-        else
-            outputBuffers.midi.mergeFrom (midiMessageArray);
+            // Then copy the buffers to the outputs
+            if (subBlockNum == 0)
+                outputBuffers.midi.swapWith (midiMessageArray);
+            else
+                outputBuffers.midi.mergeFrom (midiMessageArray);
 
-        numSamplesDone += numSamplesThisBlock;
-        numSamplesLeft -= numSamplesThisBlock;
+            numSamplesDone += numSamplesThisBlock;
+            numSamplesLeft -= numSamplesThisBlock;
 
-        if (numSamplesLeft == 0)
-            break;
+            if (numSamplesLeft == 0)
+                break;
 
-        isAllNotesOff = false;
+            isAllNotesOff = false;
+        }
     }
 
     // If the plugin was bypassed, use the delayed audio
@@ -268,13 +292,22 @@ void PluginNode::process (ProcessContext& pc)
         }
     }
 
+   #if TRACKTION_SANITISE_PLUGIN_OUTPUT
     // Some plugins flake and add NaNs so zero these out to avoid killing all the audio downstream
     sanitise (outputAudioView);
+   #endif
 }
 
 //==============================================================================
 void PluginNode::initialisePlugin (double sampleRateToUse, int blockSizeToUse)
 {
+    // The plugin is initialised here, in the constructor, and Plugin::baseClassInitialise
+    // only re-runs initialise() when the rate or block size changes, so a placeholder rate
+    // passed in here can't be corrected later - it has to be the rate this Node will be
+    // prepared and processed at
+    jassert (sampleRateToUse > 0.0);
+    jassert (blockSizeToUse > 0);
+
     plugin->baseClassInitialise ({ 0_tp, sampleRateToUse, blockSizeToUse });
     isInitialised = true;
 
@@ -285,7 +318,6 @@ void PluginNode::initialisePlugin (double sampleRateToUse, int blockSizeToUse)
 PluginRenderContext PluginNode::getPluginRenderContext (TimeRange editTime, juce::AudioBuffer<float>& destBuffer)
 {
     return { &destBuffer,
-             juce::AudioChannelSet::canonicalChannelSet (destBuffer.getNumChannels()),
              0, destBuffer.getNumSamples(),
              &midiMessageArray, 0.0,
              editTime + automationAdjustmentTime,
@@ -322,4 +354,4 @@ void PluginNode::replaceLatencyProcessorIfPossible (NodeGraph* nodeGraphToReplac
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

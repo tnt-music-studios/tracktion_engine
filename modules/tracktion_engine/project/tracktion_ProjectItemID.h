@@ -8,9 +8,32 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
+//==============================================================================
+/** A strongly-typed wrapper for a project's numeric ID.
+
+    Project IDs are opaque identity tokens used only for equality comparisons
+    and lookup — they are never used in arithmetic or as array indices.
+*/
+class ProjectID
+{
+public:
+    ProjectID() noexcept = default;
+    explicit ProjectID (int rawID) noexcept : id (rawID) {}
+
+    int toInt() const noexcept              { return id; }
+
+    bool isValid() const noexcept           { return id != 0; }
+
+    bool operator== (ProjectID o) const noexcept    { return id == o.id; }
+    bool operator!= (ProjectID o) const noexcept    { return id != o.id; }
+
+private:
+    int id = 0;
+};
+
+//==============================================================================
 /**
     An ID representing one of the items in a Project.
 
@@ -28,20 +51,18 @@ public:
     /** takes a string created by toString(). */
     explicit ProjectItemID (const juce::String& stringID) noexcept;
 
-    /** Creates an ID from the . */
-    ProjectItemID (int itemID, int projectID) noexcept;
+    /** Creates an ID from the item ID and project ID. */
+    ProjectItemID (int itemID, ProjectID projectID) noexcept;
 
     /** Generates a new ID for a given project. */
-    static ProjectItemID createNewID (int projectID) noexcept;
+    static ProjectItemID createNewID (ProjectID projectID) noexcept;
     static ProjectItemID fromProperty (const juce::ValueTree&, const juce::Identifier&);
 
-    ProjectItemID withNewProjectID (int newProjectID) const;
+    ProjectItemID withNewProjectID (ProjectID newProjectID) const;
 
     //==============================================================================
-    // TODO: create strong types for ProjectID and the ItemID
-
     /** Returns the ID of the project this item belongs to. */
-    int getProjectID() const;
+    ProjectID getProjectID() const;
     /** Returns the ID of the item within the project. */
     int getItemID() const;
 
@@ -68,14 +89,14 @@ private:
     ProjectItemID (const juce::var&) = delete;
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {
-    template <>
-    struct VariantConverter<tracktion::engine::ProjectItemID>
-    {
-        static tracktion::engine::ProjectItemID fromVar (const var& v)   { return tracktion::engine::ProjectItemID (v.toString()); }
-        static var toVar (const tracktion::engine::ProjectItemID& v)     { return v.toString(); }
-    };
+template <>
+struct VariantConverter<tracktion::engine::ProjectItemID>
+{
+    static tracktion::engine::ProjectItemID fromVar (const var& v)   { return tracktion::engine::ProjectItemID (v.toString()); }
+    static var toVar (const tracktion::engine::ProjectItemID& v)     { return v.toString(); }
+};
 }

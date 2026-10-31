@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 //==============================================================================
@@ -184,8 +183,8 @@ bool TimeStretchingWaveNode::fillNextBlock()
     if (needed >= 0)
     {
         AudioScratchBuffer scratch (fileInfo.numChannels, needed);
-        const juce::AudioChannelSet bufChannels = fileInfo.numChannels == 1 ? juce::AudioChannelSet::mono() : juce::AudioChannelSet::stereo();
-        const juce::AudioChannelSet channelsToUse = juce::AudioChannelSet::stereo();
+        const auto bufChannels = ChannelConfiguration::canonical (fileInfo.numChannels);
+        const auto channelsToUse = ChannelConfiguration::stereo();
 
         if (needed > 0)
         {
@@ -221,4 +220,4 @@ bool TimeStretchingWaveNode::fillNextBlock()
     return true;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

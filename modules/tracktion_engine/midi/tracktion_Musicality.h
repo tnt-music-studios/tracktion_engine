@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class Chord
 {
@@ -129,17 +128,20 @@ public:
     juce::Array<Chord> getTriads()   const { return triads;   }
     juce::Array<Chord> getSixths()   const { return sixths;   }
     juce::Array<Chord> getSevenths() const { return sevenths; }
+    juce::Array<Chord> getNinths()   const { return ninths;   }
 
 private:
     juce::Array<Chord> generateTriads (int offset) const;
     juce::Array<Chord> generateSixths (int offset) const;
     juce::Array<Chord> generateSevenths (int offset) const;
+    juce::Array<Chord> generateNinths (int offset) const;
 
     ScaleType type;
     juce::Array<Steps> steps;
     juce::Array<Chord> triads;
     juce::Array<Chord> sixths;
     juce::Array<Chord> sevenths;
+    juce::Array<Chord> ninths;
 };
 
 //==============================================================================
@@ -207,7 +209,9 @@ public:
     //==============================================================================
 
     juce::StringArray getPossibleTriadNames() const;
+    juce::StringArray getPossibleSixthNames() const;
     juce::StringArray getPossibleSeventhNames() const;
+    juce::StringArray getPossibleNinthNames() const;
 
     int getChordProgressionLength() const;
     const juce::Array<ProgressionItem*>& getChordProgression() const noexcept;
@@ -325,7 +329,7 @@ struct KeyResult
 
 juce::Array<KeyResult> determineKeyOfNotes (const juce::Array<MidiNote*>& notes);
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {

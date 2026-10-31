@@ -13,15 +13,14 @@
 #if __has_include(<choc/audio/choc_SampleBuffers.h>)
  #include <choc/audio/choc_SampleBuffers.h>
 #else
- #include "../../3rd_party/choc/audio/choc_SampleBuffers.h"
+ #include "../../3rd_party/choc/choc/audio/choc_SampleBuffers.h"
 #endif
 
 #include "../utilities/tracktion_Time.h"
 #include "tracktion_Types.h"
 
 
-namespace tracktion { inline namespace core
-{
+namespace tracktion::inline core {
 
 //==============================================================================
 //==============================================================================
@@ -59,4 +58,4 @@ public:
     virtual bool readSamples (choc::buffer::ChannelArrayView<float>&) = 0;
 };
 
-}} // namespace tracktion { inline namespace core
+} // namespace tracktion::inline core

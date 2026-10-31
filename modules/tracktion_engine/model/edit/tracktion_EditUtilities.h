@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 // Projects and Files
@@ -24,8 +23,11 @@ ProjectItem::Ptr getProjectItemForEdit (const Edit&);
 /** Uses the ProjectManager to look up the file for an Edit. */
 juce::File getEditFileFromProjectManager (Edit&);
 
-/** Returns true if the ProjectItemID is being used for any of the Edit's elements. */
-bool referencesProjectItem (Edit&, ProjectItemID);
+/** Returns true if the ProjectItemRef is being used for any of the Edit's elements. */
+bool referencesProjectItem (Edit&, ProjectItemRef);
+
+/** Converts all clip source paths in an Edit to relative or absolute paths. */
+void convertAllSourcePaths (Edit&, bool useRelativePaths);
 
 
 //==============================================================================
@@ -33,7 +35,9 @@ bool referencesProjectItem (Edit&, ProjectItemID);
 //==============================================================================
 
 /// Inserts blank space in to an Edit, splitting clips if necessary.
-void insertSpaceIntoEdit (Edit&, TimeRange timeRangeToInsert);
+/// If onlyTheseTracks is provided, only those tracks are affected; otherwise all tracks are.
+void insertSpaceIntoEdit (Edit&, TimeRange timeRangeToInsert,
+                          const juce::Array<Track*>& onlyTheseTracks = {});
 
 /// Inserts a number of blank beats in to the Edit.
 void insertSpaceIntoEditFromBeatRange (Edit&, BeatRange);
@@ -91,8 +95,10 @@ bool containsTrack (const Edit&, const Track&);
 /** Returns the TrackOutput if the given track has one. */
 TrackOutput* getTrackOutput (Track&);
 
-/** Returns the set of tracks as a BigInteger with each bit corresponding to the
-    array of all tracks in an Edit. Used in Renderer.
+/** Returns the given tracks as a BigInteger, with each set bit corresponding to a
+    track's index in the Edit's array of all tracks (@see getAllTracks).
+    The Edit is taken from the first track in the array; any tracks not in that Edit
+    are ignored. Used in Renderer.
 */
 juce::BigInteger toBitSet (const juce::Array<Track*>&);
 
@@ -178,6 +184,16 @@ SelectableList getClipSelectionWithCollectionClipContents (const SelectableList&
 /** Returns all clip effects */
 juce::Array<ClipEffect*> getAllClipEffects (Edit& edit);
 
+/** Removes all the content clips from an Edit, leaving its structure intact.
+
+    Video and marker clips are kept, as they describe the Edit rather than its
+    content. Clips in clip slots are removed along with those on the timeline.
+
+    This is used when exporting or archiving an Edit without its material, e.g.
+    when saving it as a template.
+*/
+void removeAllContentClips (Edit&);
+
 //==============================================================================
 // MIDI
 //==============================================================================
@@ -185,7 +201,9 @@ juce::Array<ClipEffect*> getAllClipEffects (Edit& edit);
 /** Returns the MidiNote with a given state. */
 MidiNote* findNoteForState (const Edit&, const juce::ValueTree&);
 
-/** Merges a set of MIDI clips in to one new one. */
+/** Merges a set of MIDI clips in to one new one.
+    Fails if any of the clips are in a ClipSlot.
+*/
 juce::Result mergeMidiClips (juce::Array<MidiClip*>, SelectionManager* sm = nullptr);
 
 /** Helper function to read a file to a number of MidiLists. */
@@ -238,7 +256,7 @@ juce::ReferenceCountedObjectPtr<PluginType> insertNewPlugin (Track&, int index =
 //==============================================================================
 
 /** Returns all AutomatableEditItems in an Edit. */
-juce::Array<AutomatableEditItem*> getAllAutomatableEditItems (const Edit&);
+std::vector<AutomatableEditItem*> getAllAutomatableEditItems (const Edit&);
 
 /** Deletes the automation covered by the selected clips. */
 void deleteAutomation (const SelectableList& selectedClips);
@@ -265,6 +283,11 @@ Modifier::Ptr findModifierForID (const RackType&, EditItemID);
 
 /** Returns the Track containing a Modifier. */
 Track* getTrackContainingModifier (const Edit&, const Modifier::Ptr&);
+
+/** Returns the Track that is currently showing an AutomatableParameter's curve.
+    First tries param.getTrack(), then searches all tracks for one displaying this parameter.
+*/
+Track* getTrackShowingParameter (AutomatableParameter&);
 
 
 //==============================================================================
@@ -393,4 +416,4 @@ inline typename ModifierType::Ptr findModifierTypeForID (const Edit& edit, EditI
     return {};
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

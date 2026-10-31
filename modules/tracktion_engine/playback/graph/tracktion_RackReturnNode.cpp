@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 RackReturnNode::RackReturnNode (std::unique_ptr<Node> wetNode,
                                 std::function<float()> wetGainFunc,
@@ -80,6 +79,9 @@ void RackReturnNode::prepareToPlay (const tracktion::graph::PlaybackInitialisati
     if (wetInput->numOutputNodes > 1)
         return;
 
+    if (! wetInput->canShareOutputBuffer())
+        return;
+
     const auto inputNumChannels = wetInput->getNodeProperties().numberOfChannels;
     const auto desiredNumChannels = getNodeProperties().numberOfChannels;
 
@@ -131,7 +133,7 @@ void RackReturnNode::process (ProcessContext& pc)
     }
     else
     {
-        const auto step = (wetGain - lastWetGain) / destAudio.getNumFrames();
+        const auto step = (wetGain - lastWetGain) / static_cast<float> (destAudio.getNumFrames());
         applyGainPerFrame (destAudio, [start = lastWetGain, step]() mutable { return start += step; });
 
         lastWetGain = wetGain;
@@ -155,4 +157,4 @@ void RackReturnNode::process (ProcessContext& pc)
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

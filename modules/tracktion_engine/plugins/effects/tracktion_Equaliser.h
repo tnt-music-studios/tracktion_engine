@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class EqualiserPlugin  : public Plugin
 {
@@ -31,6 +30,7 @@ public:
     juce::String getTooltip() override;
 
     int getNumOutputChannelsGivenInputs (int numInputChannels) override { return juce::jmin (numInputChannels, (int) EQ_CHANS); }
+    BusLayout getBusses() const override   { return BusLayout::singleStereoInOut(); }
 
     juce::String getSelectableDescription() override    { return TRANS("4-Band Equaliser Plugin"); }
 
@@ -95,4 +95,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EqualiserPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -54,6 +54,12 @@ public:
         juce::BigInteger tracksToDo;                            ///< An bitset of tracks to render, if this is empty, all tracks will be rendered. @see toBitSet/toTrackArray
         juce::Array<Clip*> allowedClips;                        ///< An array of clips to render, if this is empty, all clips will be included
 
+        /** Tracks whose contents keep processing even while the track is muted, so they
+            can feed the rendered tracks' sidechains, aux buses and racks without being
+            heard directly. Used with RenderSpecification::mutedTracks stem sources.
+        */
+        juce::Array<EditItemID> tracksToProcessWhileMuted;
+
         juce::File destFile;                                    ///< The destination file to write to, must be writable
         juce::AudioFormat* audioFormat = nullptr;               ///< The AudioFormat to use, can be nullptr if createMidiFile is true
 
@@ -72,9 +78,22 @@ public:
 
         bool shouldNormalise = false;                           ///< If true, the resulting audio will be normalised by peak level
         bool shouldNormaliseByRMS = false;                      ///< If true, the resulting audio will be normalised by RMS level
-        float normaliseToLevelDb = 0;                           ///< The level to normalise to
+        bool shouldNormaliseByLUFS = false;                     /**< If true, the resulting audio will be normalised to an integrated
+                                                                     loudness (BS.1770-4) target. Takes priority over the peak and
+                                                                     RMS modes if more than one is set. */
+        float normaliseToLevelDb = 0;                           ///< The level to normalise to, in dB or LUFS depending on the mode
+        bool limitTruePeak = true;                              /**< LUFS mode only: if true, the gain is held back so the true peak
+                                                                     stays under truePeakCeilingDb, even if that means the result
+                                                                     lands quieter than the loudness target. */
+        float truePeakCeilingDb = -1.0f;                        ///< The true-peak ceiling to keep under when limitTruePeak is set
         bool canRenderInMono = true;                            ///< If false, the result audio will be forced to stereo
         bool mustRenderInMono = false;                          ///< If true, the resulting audio will be forced to mono
+        ChannelConfiguration channelConfig;                     /**< Output channel configuration. When empty (default),
+                                                                     the channel layout is auto-detected from the node graph.
+                                                                     When set, defines the exact output channel layout including
+                                                                     ordering and semantic roles (e.g. 5.1, 7.1, custom).
+                                                                     The mono overrides above still take priority when set. */
+
         bool usePlugins = true;                                 ///< If false, clip/tracks plugins will be ommited from the render
         bool useMasterPlugins = false;                          ///< If true, master plugins will be included
         bool realTimeRender = false;                            ///< If true, there will be a pause between each rendered block to simulate real-time
@@ -83,6 +102,11 @@ public:
 
         int quality = 0;                                        ///< For audio formats that support it, the desired quality index @see juce::AudioFormat::createWriterFor
         juce::StringPairArray metadata;                         ///< A map of meta data to add to the file
+
+        bool wrapRemainder = false;                             /**< If true, the tail rendered during the endAllowance period is mixed
+                                                                     back onto the start of the file and the file is truncated to the
+                                                                     original time range, so the result loops seamlessly.
+                                                                     Incompatible with trimSilenceAtEnds, which takes priority. */
 
         /// @internal
         bool separateTracks = false;
@@ -135,6 +159,27 @@ public:
         juce::String errorMessage;
 
         //==============================================================================
+        /** A predicate polled to find out whether the render should stop.
+            This is called from whichever thread is driving runJob(), around once per
+            block, so it must be cheap and mustn't block.
+        */
+        using CancellationCheck = std::function<bool()>;
+
+        /** Sets an additional predicate used to cancel this render.
+            The standard thread and pool-job exit flags are always checked as well, so
+            this only needs to supply a caller's own flag.
+        */
+        void setCancellationCheck (CancellationCheck);
+
+        /** Returns true if the render should stop. */
+        bool shouldCancel() const;
+
+        /** Returns a predicate which polls whichever of the standard exit mechanisms
+            the calling thread happens to be using. Safe to call from any thread.
+        */
+        static CancellationCheck getDefaultCancellationCheck();
+
+        //==============================================================================
         /** @internal */
         static void flushAllPlugins (const Plugin::Array&, double sampleRate, int samplesPerBlock);
         /** @internal */
@@ -144,6 +189,9 @@ public:
         /** @internal */
         bool performNormalisingAndTrimming (const Renderer::Parameters& target,
                                             const Renderer::Parameters& intermediate);
+        /** @internal */
+        bool foldWrapRemainder (const Renderer::Parameters& target,
+                                const Renderer::Parameters& intermediate);
 
     private:
         //==============================================================================
@@ -151,11 +199,16 @@ public:
         std::unique_ptr<tracktion::graph::PlayHead> playHead;
         std::unique_ptr<tracktion::graph::PlayHeadState> playHeadState;
         std::unique_ptr<ProcessState> processState;
-        std::unique_ptr<NodeRenderContext> nodeRenderContext;
 
         std::atomic<float> progressInternal { 0.0f };
         std::atomic<float>& progress;
         juce::AudioFormatWriter::ThreadedWriter::IncomingDataReceiver* sourceToUpdate = nullptr;
+        CancellationCheck cancellationCheck;
+
+        // Declared last so it's destroyed first: ~NodeRenderContext calls back into
+        // this task (shouldCancel, the result fields), so every other member has to
+        // still be alive when a deferred context is destroyed with the task
+        std::unique_ptr<NodeRenderContext> nodeRenderContext;
 
         //==============================================================================
         bool renderAudio (Renderer::Parameters&);
@@ -168,10 +221,8 @@ public:
     /** Cheks a file for write access etc. and presents pop-up options to the user
         if problems occur.
     */
-    static bool checkTargetFile (Engine&, const juce::File&);
-
-    /** Deinitialises all the plugins for the Edit. */
-    static void turnOffAllPlugins (Edit&);
+    static void checkTargetFile (Engine&, const juce::File&,
+                                  std::function<void (bool)> callback);
 
     //==============================================================================
     /// Blocking render operations
@@ -307,9 +358,24 @@ public:
         friend EditRenderer;
 
         std::thread renderThread;
+
+        // Registers renderThread for signalThreadShouldExit. Owned here rather
+        // than by the thread body so the registration spans the thread's whole
+        // lifetime: engaged before it runs, destroyed after ~Handle joins it
+        std::optional<ScopedThreadExitStatusEnabler> threadExitEnabler;
+
         std::atomic<float> progress { 0.0f };
         std::atomic<bool> hasBeenCancelled { false };
         std::shared_ptr<juce::AudioFormatWriter::ThreadedWriter::IncomingDataReceiver> thumbnailToUpdate;
+
+        // A cancelled render also hands over its render status, which has to outlive the
+        // task: releasing it first would let a playback graph be built whilst the render
+        // graph still holds the plugins. Declared before the task so it's destroyed after it
+        std::unique_ptr<Edit::ScopedRenderStatus> renderStatusToDestroy;
+
+        // A cancelled render can't tear its graph down on its own thread, so it hands
+        // the task over to be destroyed on the message thread once the thread has gone
+        std::unique_ptr<Renderer::RenderTask> taskToDestroy;
 
         Handle() = default;
     };

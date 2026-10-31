@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace graph
-{
+namespace tracktion::inline graph {
 
 //==============================================================================
 //==============================================================================
@@ -186,8 +185,11 @@ public:
     SilentNode (int numChannelsToUse = 1)
         : numChannels (numChannelsToUse)
     {
+        // The buffer is cleared once in prepareToPlay and never re-written, so downstream
+        // Nodes must not process in place on it or its silence guarantee is lost.
         setOptimisations ({ ClearBuffers::no,
-                            AllocateAudioBuffer::no });
+                            AllocateAudioBuffer::no,
+                            ShareOutputBuffer::no });
     }
 
     NodeProperties getNodeProperties() override
@@ -610,6 +612,9 @@ public:
         if (input->numOutputNodes > 1)
             return;
 
+        if (! input->canShareOutputBuffer())
+            return;
+
         const auto inputNumChannels = input->getNodeProperties().numberOfChannels;
         const auto desiredNumChannels = getNodeProperties().numberOfChannels;
 
@@ -745,95 +750,6 @@ private:
 
 //==============================================================================
 //==============================================================================
-/** Maps channels from one to another. */
-class ChannelRemappingNode final    : public Node
-{
-public:
-    ChannelRemappingNode (std::unique_ptr<Node> inputNode,
-                          std::vector<std::pair<int /*source channel*/, int /*dest channel*/>> channelMapToUse,
-                          bool passMidiThrough)
-        : input (std::move (inputNode)),
-          channelMap (std::move (channelMapToUse)),
-          passMIDI (passMidiThrough)
-    {
-        jassert (input);
-    }
-
-    NodeProperties getNodeProperties() override
-    {
-        NodeProperties props;
-        props.hasAudio = ! channelMap.empty();
-        props.hasMidi = passMIDI;
-        props.numberOfChannels = 0;
-
-        const auto inputProps = input->getNodeProperties();
-        props.latencyNumSamples = inputProps.latencyNumSamples;
-
-        props.nodeID = inputProps.nodeID;
-        hash_combine (props.nodeID, passMIDI);
-
-        // Num channels is the max of destinations
-        for (auto channel : channelMap)
-        {
-            hash_combine (props.nodeID, channel.first);
-            hash_combine (props.nodeID, channel.second);
-
-            props.numberOfChannels = std::max (props.numberOfChannels, channel.second + 1);
-        }
-
-        constexpr size_t channelNodeMagicHash = size_t (0x6368616e6e656c);
-
-        if (props.nodeID != 0)
-            hash_combine (props.nodeID, channelNodeMagicHash);
-
-        return props;
-    }
-
-    std::vector<Node*> getDirectInputNodes() override
-    {
-        return { input.get() };
-    }
-
-    bool isReadyToProcess() override
-    {
-        return input->hasProcessed();
-    }
-
-    void process (ProcessContext& pc) override
-    {
-        auto inputBuffers = input->getProcessedOutput();
-
-        // Pass on MIDI
-        if (passMIDI)
-            pc.buffers.midi.mergeFrom (inputBuffers.midi);
-
-        // Remap audio
-        for (auto channel : channelMap)
-            if (channel.first < (int) inputBuffers.audio.getNumChannels())
-                add (pc.buffers.audio.getChannel ((choc::buffer::ChannelCount) channel.second),
-                     inputBuffers.audio.getChannel ((choc::buffer::ChannelCount) channel.first));
-    }
-
-private:
-    std::unique_ptr<Node> input;
-    const std::vector<std::pair<int, int>> channelMap;
-    const bool passMIDI;
-};
-
-
-/** Creates a channel map from source/dest pairs in an initializer_list. */
-static inline std::vector<std::pair<int, int>> makeChannelMap (std::initializer_list<std::pair<int, int>> sourceDestChannelIndicies)
-{
-    std::vector<std::pair<int, int>> map;
-
-    for (auto channelPair : sourceDestChannelIndicies)
-        map.push_back (channelPair);
-
-    return map;
-}
-
-//==============================================================================
-//==============================================================================
 /** Blocks audio and MIDI input from reaching the outputs. */
 class SinkNode final    : public Node
 {
@@ -849,6 +765,11 @@ public:
         constexpr size_t sinkNodeMagicHash = size_t (0x95ab5e9dcd);
         auto props = input->getNodeProperties();
         hash_combine (props.nodeID, sinkNodeMagicHash);
+
+        // Nothing is output, so don't make the Nodes this feeds in to any wider
+        props.hasAudio = false;
+        props.hasMidi = false;
+        props.numberOfChannels = 0;
 
         return props;
     }
@@ -872,4 +793,4 @@ private:
 };
 
 
-}}
+}

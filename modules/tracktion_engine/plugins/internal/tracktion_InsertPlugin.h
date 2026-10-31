@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class InsertPlugin  : public Plugin
 {
@@ -34,10 +33,10 @@ public:
     juce::String getShortName (int) override;
     double getLatencySeconds() override;
     void getChannelNames (juce::StringArray*, juce::StringArray*) override;
-    bool takesAudioInput() override;
     bool takesMidiInput() override;
     bool canBeAddedToClip() override;
     bool needsConstantBufferSize() override;
+    BusLayout getBusses() const override   { return BusLayout::singlePassThrough(); }
 
     void initialise (const PluginInitialisationInfo&) override;
     void initialiseWithoutStopping (const PluginInitialisationInfo&) override;
@@ -82,4 +81,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (InsertPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

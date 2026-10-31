@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -23,14 +22,14 @@ public:
 
     //==============================================================================
     /** Adds the whole of a media id to the list. */
-    void add (ProjectItemID id)
+    void add (ProjectItemRef id)
     {
         if (auto projectItem = projectManager.getProjectItem (id))
             add (projectItem, 0, projectItem->getLength());
     }
 
     /** Adds just a section of a media id to the list. */
-    void add (ProjectItemID id, double startTime, double length)
+    void add (ProjectItemRef id, double startTime, double length)
     {
         if (auto projectItem = projectManager.getProjectItem (id))
         {
@@ -46,7 +45,7 @@ public:
 
     void add (const Exportable::ReferencedItem& item)
     {
-        add (item.itemID, item.firstTimeUsed, item.lengthUsed);
+        add (item.itemRef, item.firstTimeUsed, item.lengthUsed);
     }
 
     void add (const ProjectItem::Ptr& mop, double start, double length)
@@ -54,25 +53,27 @@ public:
         if (length <= 0.0)
             return;
 
-        auto itemID = mop->getID();
+        auto ref = mop->getProjectItemRef();
 
         for (int i = ids.size(); --i >= 0;)
         {
-            if (itemID == ids.getReference(i))
+            if (ref == ids.getReference (i))
             {
                 excerpts[i]->addInterval (start, length);
                 return;
             }
         }
 
-        ids.add (itemID);
+        items.add (mop);
+        ids.add (ref);
+
         auto intervals = new IntervalList();
         intervals->addInterval (start, length);
         excerpts.add (intervals);
     }
 
     //==============================================================================
-    juce::String getReassignedFileName (ProjectItemID id, double requiredTime,
+    juce::String getReassignedFileName (ProjectItemRef id, double requiredTime,
                                         double& newStartTime, double& newLength) const
     {
         requiredTime = juce::jmax (0.0, requiredTime);
@@ -167,16 +168,17 @@ public:
 
     //==============================================================================
     ProjectManager& projectManager;
-    juce::Array<ProjectItemID> ids;
+    juce::Array<ProjectItem::Ptr> items;
+    juce::Array<ProjectItemRef> ids;
 
 private:
     juce::OwnedArray<IntervalList> excerpts;
     double handleSize;
 
-    const IntervalList* getIntervalsForID (ProjectItemID id) const
+    const IntervalList* getIntervalsForID (const ProjectItemRef& ref) const
     {
         for (int i = ids.size(); --i >= 0;)
-            if (id == ids.getReference(i))
+            if (ref == ids.getReference(i))
                 return excerpts[i];
 
         return {};
@@ -185,4 +187,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReferencedMaterialList)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 inline HashCode hashDouble (double d) noexcept
 {
@@ -105,8 +104,8 @@ protected:
         auto numToDo = (int) std::min ((SampleCount) 32768, numLeft);
 
         AudioScratchBuffer scratch (numChannels, numToDo);
-        auto schannels = juce::AudioChannelSet::canonicalChannelSet(numChannels);
-        reader->readSamples (numToDo, scratch.buffer, schannels, 0, juce::AudioChannelSet::stereo(), 5000);
+        auto schannels = ChannelConfiguration::canonical (numChannels);
+        reader->readSamples (numToDo, scratch.buffer, schannels, 0, ChannelConfiguration::stereo(), 5000);
 
         if (findingNormaliseLevel)
             processNextNormaliseBuffer (scratch.buffer);
@@ -114,7 +113,7 @@ protected:
             processNextBuffer (scratch.buffer);
 
         numSamplesRead += numToDo;
-        progress = (numSamplesRead / (float) totalNumSamples)
+        progress = (static_cast<float> (numSamplesRead) / (float) totalNumSamples)
             * (findingNormaliseLevel ? 0.5f : 1.0f);
 
         if (findingNormaliseLevel && numSamplesRead >= totalNumSamples)
@@ -218,7 +217,7 @@ private:
 
     TimePosition sampleToSeconds (SampleCount sample) const
     {
-        return TimePosition::fromSeconds (sampleRate > 0.0 ? sample / sampleRate : 0.0);
+        return TimePosition::fromSeconds (sampleRate > 0.0 ? static_cast<double> (sample) / sampleRate : 0.0);
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TransientDetectionJob)
@@ -607,4 +606,4 @@ void WarpTimeFactory::removeWarpTimeManager (WarpTimeManager& wtm)
     warpTimeManagers.removeAllInstancesOf (&wtm);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

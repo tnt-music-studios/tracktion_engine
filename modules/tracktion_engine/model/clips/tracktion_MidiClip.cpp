@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static std::unique_ptr<MidiList> createLoopRangeDefinesAllRepetitionsSequence (MidiClip& clip, MidiList& sourceSequence)
 {
@@ -286,17 +285,6 @@ std::unique_ptr<MidiList> MidiClip::createSequenceLooped (MidiList& sourceSequen
         default:
             return createLoopRangeDefinesAllRepetitionsSequence (*this, sourceSequence);
     }
-}
-
-MidiClip::ScopedEventsList::ScopedEventsList (MidiClip& c, SelectedMidiEvents* e)
-    : clip (c)
-{
-    clip.setSelectedEvents (e);
-}
-
-MidiClip::ScopedEventsList::~ScopedEventsList()
-{
-    clip.setSelectedEvents (nullptr);
 }
 
 //==============================================================================
@@ -587,13 +575,21 @@ bool MidiClip::isCurrentTakeComp()
 
 void MidiClip::deleteAllUnusedTakesConfirmingWithUser()
 {
-    if (edit.engine.getUIBehaviour()
-            .showOkCancelAlertBox (TRANS("Delete Unused Takes"),
-                                   TRANS("This will permanently delete all unused MIDI takes in this clip.")
-                                     + "\n\n"
-                                     + TRANS("Are you sure you want to do this?"),
-                                   TRANS("Delete")))
-        clearTakes();
+    Clip::Ptr ref (this);
+
+    edit.engine.getUIBehaviour()
+        .showOkCancelAlertBoxAsync (TRANS("Delete Unused Takes"),
+                                    TRANS("This will permanently delete all unused MIDI takes in this clip.")
+                                      + "\n\n"
+                                      + TRANS("Are you sure you want to do this?"),
+                                    TRANS("Delete"),
+                                    TRANS("Cancel"),
+                                    [ref] (bool okPressed)
+                                    {
+                                        if (okPressed)
+                                            if (auto mc = dynamic_cast<MidiClip*> (ref.get()))
+                                                mc->clearTakes();
+                                    });
 }
 
 Clip::Array MidiClip::unpackTakes (bool toNewTracks)
@@ -799,11 +795,6 @@ void MidiClip::valueTreePropertyChanged (juce::ValueTree& tree, const juce::Iden
         else if (id == IDs::currentTake)
         {
             currentTake.forceUpdateOfCachedValue();
-
-            for (SelectionManager::Iterator sm; sm.next();)
-                if (sm->isSelected (getSelectedEvents()))
-                    sm->deselectAll();
-
             clearCachedLoopSequence();
         }
         else if (id == IDs::launchQuantisation || id == IDs::useClipLaunchQuantisation)
@@ -914,4 +905,4 @@ void mergeInMidiSequence (MidiClip& mc, juce::MidiMessageSequence ms, TimeDurati
     mc.mergeInMidiSequence (ms, automationType);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

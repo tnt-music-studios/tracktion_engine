@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace AppFunctions
 {
@@ -58,8 +57,8 @@ namespace AppFunctions
     void scrollTracksRight();
 
     void toggleEndToEnd();
-    bool saveEdit();
-    bool saveEditAs();
+    void saveEdit();
+    void saveEditAs();
     void armOrDisarmAllInputs();
     void goToMarkIn();
     void goToMarkOut();
@@ -112,4 +111,4 @@ namespace AppFunctions
     void toggleTrackFreeze();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -31,6 +30,7 @@ struct AudioFileInfo
     int bitsPerSample = 0;
     bool isFloatingPoint = false;
     bool needsCachedProxy = false;
+    juce::AudioChannelSet channelLayout;
     juce::StringPairArray metadata;
     juce::Time fileModificationTime;
     LoopInfo loopInfo;
@@ -38,7 +38,7 @@ struct AudioFileInfo
     double getLengthInSeconds() const noexcept
     {
         if (sampleRate > 0)
-            return lengthInSamples / sampleRate;
+            return static_cast<double> (lengthInSamples) / sampleRate;
 
         return 0.0;
     }
@@ -101,4 +101,4 @@ private:
     HashCode hash = 0;
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

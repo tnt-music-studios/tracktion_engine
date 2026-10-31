@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 WaveAudioClip::WaveAudioClip (const juce::ValueTree& v, EditItemID clipID, ClipOwner& co)
     : AudioClipBase (v, clipID, Type::wave, co)
@@ -92,6 +91,9 @@ juce::File WaveAudioClip::getOriginalFile() const
 
 bool WaveAudioClip::needsRender() const
 {
+    if (! edit.shouldPlay())
+        return false;
+
     return ! isUsingARA()
         && (isReversed || (warpTime && canUseProxy()) || (clipEffects != nullptr && canHaveEffects()))
         && AudioFile (edit.engine, getOriginalFile()).isValid();
@@ -127,10 +129,8 @@ void WaveAudioClip::setLoopDefaults()
 }
 
 void WaveAudioClip::reassignReferencedItem (const ReferencedItem& item,
-                                            ProjectItemID newItemID, double newStartTimeSeconds)
+                                            ProjectItemRef newRef, double newStartTime)
 {
-    const auto newStartTime = TimeDuration::fromSeconds (newStartTimeSeconds);
-
     if (hasAnyTakes())
     {
         auto indexInList = getReferencedItems().indexOf (item);
@@ -141,30 +141,51 @@ void WaveAudioClip::reassignReferencedItem (const ReferencedItem& item,
             return;
         }
 
-        if (indexInList == getCurrentTake())
-            sourceFileReference.setToProjectFileReference (newItemID);
-
-        auto take = getTakesTree().getChild (indexInList);
-
-        if (take.isValid())
-            take.setProperty (IDs::source, newItemID.toString(), getUndoManager());
-
-        if (indexInList == 0)
+        if (newRef.isProjectItemID())
         {
-            if (! isLooping())
-                setOffset (getPosition().getOffset() - (newStartTime / getSpeedRatio()));
-            else
-                loopStart = loopStart - (newStartTime / getSpeedRatio());
+            auto newItemID = *newRef.getProjectItemID();
+
+            if (indexInList == getCurrentTake())
+                sourceFileReference.setToProjectFileReference (ProjectItemRef (newItemID));
+
+            auto take = getTakesTree().getChild (indexInList);
+
+            if (take.isValid())
+                take.setProperty (IDs::source, newItemID.toString(), getUndoManager());
+
+            if (indexInList == 0)
+            {
+                auto startOffset = TimeDuration::fromSeconds (newStartTime);
+
+                if (! isLooping())
+                    setOffset (getPosition().getOffset() - (startOffset / getSpeedRatio()));
+                else
+                    loopStart = loopStart - (startOffset / getSpeedRatio());
+            }
+        }
+        else
+        {
+            // Not undoable, see AudioClipBase::reassignReferencedItem
+            auto newFile = newRef.resolve (edit.engine);
+            auto path = SourceFileReference::findPathFromFile (edit, newFile, true);
+
+            if (indexInList == getCurrentTake())
+                sourceFileReference.source.setValue (path, nullptr);
+
+            auto take = getTakesTree().getChild (indexInList);
+
+            if (take.isValid())
+                take.setProperty (IDs::source, path, nullptr);
         }
     }
     else
     {
-        AudioClipBase::reassignReferencedItem (item, newItemID, newStartTimeSeconds);
+        AudioClipBase::reassignReferencedItem (item, newRef, newStartTime);
     }
 }
 
 //==============================================================================
-void WaveAudioClip::addTake (ProjectItemID id)
+void WaveAudioClip::addTake (ProjectItemRef id)
 {
     auto um = getUndoManager();
     auto takesTree = state.getOrCreateChildWithName (IDs::TAKES, um);
@@ -183,7 +204,7 @@ void WaveAudioClip::addTake (const juce::File& f)
 
     {
         SourceFileReference sfr (edit, take, IDs::source);
-        sfr.setToDirectFileReference (f, true);
+        sfr.setToFile (f, SourceFileReference::PathStyle::chooseBest, true);
     }
 
     takesTree.addChild (take, -1, um);
@@ -197,15 +218,15 @@ int WaveAudioClip::getNumTakes (bool includeComps)
     return hasAnyTakes() ? getCompManager().getNumTakes() : 0;
 }
 
-juce::Array<ProjectItemID> WaveAudioClip::getTakes() const
+juce::Array<ProjectItemRef> WaveAudioClip::getTakes() const
 {
-    juce::Array<ProjectItemID> takes;
+    juce::Array<ProjectItemRef> takes;
 
     auto takesTree = state.getChildWithName (IDs::TAKES);
 
     for (auto t : takesTree)
         if (t.hasProperty (IDs::source))
-            takes.add (ProjectItemID::fromProperty (t, IDs::source));
+            takes.add (ProjectItemRef (t.getProperty (IDs::source).toString()));
 
     return takes;
 }
@@ -227,7 +248,7 @@ int WaveAudioClip::getCurrentTake() const
         currentTakeIndex = -1;
 
         auto takesTree = getTakesTree();
-        auto pid = sourceFileReference.getSourceProjectItemID().toString();
+        auto pid = sourceFileReference.getSourceProjectItemRef().toString();
 
         for (int i = takesTree.getNumChildren(); --i >= 0;)
         {
@@ -291,12 +312,12 @@ void WaveAudioClip::setCurrentTake (int takeIndex)
     auto take = takesTree.getChild (takeIndex);
     jassert (take.isValid());
 
-    auto takeSourceID = ProjectItemID::fromProperty (take, IDs::source);
-    auto mo = edit.engine.getProjectManager().getProjectItem (takeSourceID);
+    auto takeSourceRef = ProjectItemRef (take.getProperty (IDs::source).toString());
+    auto mo = edit.engine.getProjectManager().getProjectItem (takeSourceRef);
     invalidateCurrentTake();
 
     if (mo != nullptr || getCompManager().isTakeComp (takeIndex))
-        sourceFileReference.setToProjectFileReference (takeSourceID);
+        sourceFileReference.setToProjectFileReference (takeSourceRef);
     else
         takesTree.removeChild (take, getUndoManager());
 
@@ -338,72 +359,73 @@ juce::StringArray WaveAudioClip::getTakeDescriptions() const
     return s;
 }
 
-void WaveAudioClip::deleteAllUnusedTakesConfirmingWithUser (bool deleteSourceFiles)
+void WaveAudioClip::deleteAllUnusedTakesConfirmingWithUser (bool)
 {
     CRASH_TRACER
 
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    auto showWarning = [] (const juce::String& title, const juce::String& message, bool& delFiles) -> int
+    auto showWarningAsync = [] (const juce::String& title, const juce::String& message,
+                                std::function<void (bool okPressed, bool delFiles)> callback)
     {
-        const std::unique_ptr<juce::AlertWindow> w (juce::LookAndFeel::getDefaultLookAndFeel()
-                                                        .createAlertWindow (title, message,
-                                                                            {}, {}, {},
-                                                                            juce::AlertWindow::QuestionIcon, 0, nullptr));
+        auto w = std::shared_ptr<juce::AlertWindow> (juce::LookAndFeel::getDefaultLookAndFeel()
+                                                        .createAlertWindowForOptions (juce::MessageBoxOptions()
+                                                                                        .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                                                                                        .withTitle (title)
+                                                                                        .withMessage (message)));
 
-        juce::ToggleButton delFilesButton (TRANS("Delete Source Files?"));
-        delFilesButton.setSize (400, 20);
-        delFilesButton.setName ({});
-        w->addCustomComponent (&delFilesButton);
+        auto delFilesButton = std::make_shared<juce::ToggleButton> (TRANS("Delete Source Files?"));
+        delFilesButton->setSize (400, 20);
+        delFilesButton->setName ({});
+        w->addCustomComponent (delFilesButton.get());
         w->addTextBlock (TRANS("(This will also delete these from any other Edits in this project)"));
         w->addButton (TRANS("OK"), 1, juce::KeyPress (juce::KeyPress::returnKey));
         w->addButton (TRANS("Cancel"), 2, juce::KeyPress (juce::KeyPress::escapeKey));
 
-        const int res = w->runModalLoop();
-        delFiles = delFilesButton.getToggleState();
-
-        return res;
+        w->enterModalState (true, juce::ModalCallbackFunction::create (
+            [w, delFilesButton, cb = std::move (callback)] (int res)
+            {
+                if (cb)
+                    cb (res == 1, delFilesButton->getToggleState());
+            }));
     };
 
     if (getCompManager().isCurrentTakeComp())
     {
-        if (showWarning (TRANS("Flatten Takes"),
-                         TRANS("This will permanently remove all takes in this clip, replacing it with"
-                               " the current comp. This operation can not be undone.")
-                         + "\n\n"
-                         + TRANS("Are you sure you want to do this?"),
-                         deleteSourceFiles) == 1)
-            getCompManager().flattenTake (getCurrentTake(), deleteSourceFiles);
-
+        showWarningAsync (TRANS("Flatten Takes"),
+                          TRANS("This will permanently remove all takes in this clip, replacing it with"
+                                " the current comp. This operation can not be undone.")
+                          + "\n\n"
+                          + TRANS("Are you sure you want to do this?"),
+                          [this] (bool okPressed, bool delFiles)
+                          {
+                              if (okPressed)
+                                  getCompManager().flattenTake (getCurrentTake(), delFiles);
+                          });
         return;
     }
-   #endif
 
-    bool userIsSure = true;
-
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    userIsSure = (showWarning (TRANS("Delete Unused Takes"),
-                               TRANS("This will permanently delete all wave files that are listed as takes in this "
-                                     "clip, apart from the ones currently being used.")
-                                + "\n\n"
-                                + TRANS("Are you sure you want to do this?"),
-                                deleteSourceFiles) == 1);
-   #endif
-
-    if (userIsSure)
-        deleteAllUnusedTakes (deleteSourceFiles);
+    showWarningAsync (TRANS("Delete Unused Takes"),
+                      TRANS("This will permanently delete all wave files that are listed as takes in this "
+                            "clip, apart from the ones currently being used.")
+                       + "\n\n"
+                       + TRANS("Are you sure you want to do this?"),
+                      [this] (bool okPressed, bool delFiles)
+                      {
+                          if (okPressed)
+                              deleteAllUnusedTakes (delFiles);
+                      });
 }
 
-static bool isTakeInUse (const WaveAudioClip& clip, ProjectItemID takeProjectItemID)
+static bool isTakeInUse (const WaveAudioClip& clip, const ProjectItemRef& takeRef)
 {
     for (auto t : getClipTracks (clip.edit))
     {
         for (auto& c : t->getClips())
         {
-            if (c->getSourceFileReference().getSourceProjectItemID() == takeProjectItemID)
+            if (c->getSourceFileReference().getSourceProjectItemRef() == takeRef)
                 return true;
 
             if (auto wac = dynamic_cast<WaveAudioClip*> (c))
-                if (wac != &clip && wac->getTakes().contains (takeProjectItemID))
+                if (wac != &clip && wac->getTakes().contains (takeRef))
                     return true;
         }
     }
@@ -422,19 +444,19 @@ void WaveAudioClip::deleteAllUnusedTakes (bool deleteSourceFiles)
     {
         for (int i = takes.size(); --i >= 0;)
         {
-            auto takeProjectItemID = takes.getReference (i);
+            auto takeRef = takes.getReference (i);
 
-            if (! isTakeInUse (*this, takeProjectItemID))
+            if (! isTakeInUse (*this, takeRef))
             {
                 bool removedOk = ! deleteSourceFiles
-                                  || proj->getProjectItemForID (takeProjectItemID) == nullptr
-                                  || proj->removeProjectItem (takeProjectItemID, true);
+                                  || proj->getProjectItemFor (takeRef) == nullptr
+                                  || proj->removeProjectItem (takeRef, true);
 
                 if (removedOk)
                 {
                     for (auto child : state)
                     {
-                        if (ProjectItemID::fromProperty (child, IDs::source) == takeProjectItemID)
+                        if (ProjectItemRef (child.getProperty (IDs::source).toString()) == takeRef)
                         {
                             state.removeChild (child, getUndoManager());
                             break;
@@ -585,4 +607,4 @@ bool WaveAudioClip::isUsingFile (const AudioFile& af)
     return false;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

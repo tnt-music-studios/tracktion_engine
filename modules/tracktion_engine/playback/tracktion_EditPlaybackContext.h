@@ -8,8 +8,9 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
+
+struct CreateNodeParams;
 
 //==========================================================================
 //==========================================================================
@@ -29,6 +30,16 @@ public:
     void createPlayAudioNodes (TimePosition startTime);
     void createPlayAudioNodesIfNeeded (TimePosition startTime);
     void reallocate();
+
+    /** Sets a callback used to add an additional final Node to each output device's chain
+        when the playback graph is (re)built. See CreateNodeParams::insertOptionalLastStageNodeForDevice.
+        The callback is applied on the next graph build, so call reallocate()/Edit::restartPlayback()
+        afterwards to apply it. As the context is recreated each time it's allocated, clients should
+        re-set this from TransportControl::Listener::playbackContextChanged().
+    */
+    void setInsertOptionalLastStageNodeForDeviceCallback (std::function<std::unique_ptr<graph::Node> (OutputDevice&,
+                                                                                                      const CreateNodeParams&,
+                                                                                                      std::unique_ptr<graph::Node>)>);
 
     /** Returns true if a playback graph is currently allocated. */
     bool isPlaybackGraphAllocated() const       { return isAllocated; }
@@ -167,6 +178,10 @@ public:
 private:
     bool isAllocated = false;
 
+    std::function<std::unique_ptr<graph::Node> (OutputDevice&,
+                                                const CreateNodeParams&,
+                                                std::unique_ptr<graph::Node>)> insertOptionalLastStageNodeForDeviceCallback;
+
     struct ProcessPriorityBooster
     {
         ProcessPriorityBooster (Engine& engine);
@@ -236,4 +251,4 @@ namespace detail
     };
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

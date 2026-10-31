@@ -34,6 +34,8 @@ extern "C"
 
 #include <string>
 #include <bitset>
+#include <cstdarg>
+#include <cstdio>
 
 #ifdef __GNUC__
  #pragma GCC diagnostic push
@@ -41,6 +43,7 @@ extern "C"
 #endif
 
 #include "audio_files/formats/tracktion_FFmpegEncoderAudioFormat.cpp"
+#include "audio_files/formats/tracktion_LibLameEncoderAudioFormat.cpp"
 #include "audio_files/formats/tracktion_FloatAudioFileFormat.cpp"
 #include "audio_files/formats/tracktion_RexFileFormat.cpp"
 #include "audio_files/formats/tracktion_LAMEManager.cpp"
@@ -48,15 +51,24 @@ extern "C"
 #include "audio_files/tracktion_BufferedFileReader.h"
 #include "audio_files/tracktion_BufferedFileReader.cpp"
 
+#include "audio_files/tracktion_AudioFifo.test.cpp"
+
 #include "audio_files/tracktion_AudioFileCache.cpp"
 #include "audio_files/tracktion_AudioFileCache.test.cpp"
 #include "audio_files/tracktion_AudioFile.cpp"
 #include "audio_files/tracktion_AudioFile.test.cpp"
 #include "audio_files/tracktion_AudioFileUtils.cpp"
+#include "audio_files/tracktion_LoudnessMeter.cpp"
+#include "audio_files/tracktion_LoudnessMeter.test.cpp"
+#include "audio_files/tracktion_StereoFieldAnalyser.cpp"
+#include "audio_files/tracktion_StereoFieldAnalyser.test.cpp"
+#include "audio_files/tracktion_AudioFileAnalyser.cpp"
+#include "audio_files/tracktion_AudioFileAnalyser.test.cpp"
 #include "audio_files/tracktion_AudioFormatManager.cpp"
 #include "audio_files/tracktion_BufferedAudioReader.cpp"
 
 #include "midi/tracktion_MidiList.cpp"
+#include "midi/tracktion_MidiList.test.cpp"
 #include "midi/tracktion_MidiProgramManager.cpp"
 #include "midi/tracktion_Musicality.cpp"
 #include "midi/tracktion_SelectedMidiEvents.cpp"

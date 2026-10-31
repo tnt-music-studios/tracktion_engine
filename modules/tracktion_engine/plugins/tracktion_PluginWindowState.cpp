@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static bool isDialogOpen()
 {
@@ -27,8 +26,7 @@ static bool isDialogOpen()
 
 PluginWindowState::PluginWindowState (Edit& e)
    : edit (e),
-     engine (e.engine),
-     windowLocked (engine.getPluginManager().areGUIsLockedByDefault())
+     engine (e.engine)
 {
 }
 
@@ -212,9 +210,16 @@ void PluginWindowState::pluginClicked (const juce::MouseEvent& e)
         else
             showWindowExplicitly();
     }
-    else if (! (isShowing || engine.getPluginManager().doubleClickToOpenWindows()))
+    else if (! engine.getPluginManager().doubleClickToOpenWindows())
     {
-        showWindowExplicitly();
+        if (isShowing)
+            pluginWindow->toFront (false);
+        else
+            showWindowExplicitly();
+    }
+    else if (isShowing)
+    {
+        pluginWindow->toFront (false);
     }
 }
 
@@ -227,10 +232,6 @@ void PluginWindowState::timerCallback()
         if ((pluginWindow == nullptr || ! pluginWindow->isVisible())
              && ! (engine.getPluginManager().doubleClickToOpenWindows() || wasExplicitlyClosed))
             showWindow();
-    }
-    else if (! windowLocked)
-    {
-        deleteWindow();
     }
 }
 
@@ -251,4 +252,4 @@ juce::Point<int> PluginWindowState::choosePositionForPluginWindow()
             .getPrimaryDisplay()->userBounds.getRelativePoint (0.2f, 0.2f).roundToInt();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

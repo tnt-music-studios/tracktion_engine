@@ -8,13 +8,12 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
-struct FallbackReader  : public juce::AudioFormatReader
+struct AudioFormatReaderWithTimeout  : public juce::AudioFormatReader
 {
     /** Constructor. */
-    FallbackReader();
+    AudioFormatReaderWithTimeout();
 
     /** Subclassed must override this to set the timeout.
         A value of less than 0 means wait forever,
@@ -46,9 +45,9 @@ public:
 
         bool readSamples (int numSamples,
                           juce::AudioBuffer<float>& destBuffer,
-                          const juce::AudioChannelSet& destBufferChannels,
+                          const ChannelConfiguration& destChannels,
                           int startOffsetInDestBuffer,
-                          const juce::AudioChannelSet& sourceBufferChannels,
+                          const ChannelConfiguration& sourceChannels,
                           int timeoutMs);
 
         bool readSamples (int* const* destSamples,
@@ -73,9 +72,9 @@ public:
         AudioFileCache& cache;
         void* file;
         std::atomic<SampleCount> readPos { 0 }, loopStart { 0 }, loopLength { 0 };
-        std::unique_ptr<FallbackReader> fallbackReader;
+        std::unique_ptr<AudioFormatReaderWithTimeout> fallbackReader;
 
-        Reader (AudioFileCache&, void*, std::unique_ptr<FallbackReader>);
+        Reader (AudioFileCache&, void*, std::unique_ptr<AudioFormatReaderWithTimeout>);
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Reader)
     };
@@ -87,15 +86,15 @@ public:
 
     /** @internal */
     Reader::Ptr createReader (const AudioFile&,
-                              const std::function<std::unique_ptr<FallbackReader> (juce::AudioFormatReader* sourceReader,
+                              const std::function<std::unique_ptr<AudioFormatReaderWithTimeout> (juce::AudioFormatReader* sourceReader,
                                                                                    juce::TimeSliceThread& timeSliceThread,
                                                                                    int samplesToBuffer)>&
-                              createFallbackReader);
+                              createAudioFormatReaderWithTimeout);
 
     /** @internal */
-    Reader::Ptr createFallbackReader (const std::function<std::unique_ptr<FallbackReader> (juce::TimeSliceThread& timeSliceThread,
+    Reader::Ptr createAudioFormatReaderWithTimeout (const std::function<std::unique_ptr<AudioFormatReaderWithTimeout> (juce::TimeSliceThread& timeSliceThread,
                                                                                            int samplesToBuffer)>&
-                                      createFallbackReader);
+                                      createAudioFormatReaderWithTimeout);
 
     //==============================================================================
     void setCacheSizeSamples (SampleCount samplesPerFile);
@@ -117,7 +116,7 @@ public:
 private:
     Engine& engine;
     SampleCount totalBytesUsed = 0, cacheSizeSamples = 0;
-    bool cacheMissed = false;
+    std::atomic<bool> cacheMissed { false };
 
     std::atomic<double> blockDurationMs { 0.0 }, lastBlockDurationMs { 0.0 };
     struct ScopedFileRead;
@@ -152,4 +151,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioFileCache)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

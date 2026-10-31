@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class DiskSpaceCheckTask  : public juce::ThreadPoolJob,
                             private juce::Timer,
@@ -171,7 +170,7 @@ struct RetrospectiveRecordBuffer
     void syncToEdit (Edit& edit, EditPlaybackContext& context, double streamTime, int numSamplesIn)
     {
         const juce::SpinLock::ScopedLockType sl (editInfoLock);
-        auto& pei = editInfo[edit.getProjectItemID()];
+        auto& pei = editInfo[edit.getProjectItemRef()];
 
         if (context.isPlaying())
         {
@@ -187,7 +186,7 @@ struct RetrospectiveRecordBuffer
     bool wasRecentlyPlaying (Edit& edit)
     {
         const juce::SpinLock::ScopedLockType sl (editInfoLock);
-        auto& pei = editInfo[edit.getProjectItemID()];
+        auto& pei = editInfo[edit.getProjectItemRef()];
 
         return (pei.lastEditTime >= 0s && pei.pausedTime < 20s);
     }
@@ -195,7 +194,7 @@ struct RetrospectiveRecordBuffer
     void removeEditSync (Edit& edit)
     {
         const juce::SpinLock::ScopedLockType sl (editInfoLock);
-        auto itr = editInfo.find (edit.getProjectItemID());
+        auto itr = editInfo.find (edit.getProjectItemRef());
 
         if (itr != editInfo.end())
             editInfo.erase (itr);
@@ -216,7 +215,7 @@ struct RetrospectiveRecordBuffer
         TimeDuration pausedTime;
     };
 
-    std::map<ProjectItemID, PerEditInfo> editInfo;
+    std::map<ProjectItemRef, PerEditInfo> editInfo;
     juce::SpinLock editInfoLock;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RetrospectiveRecordBuffer)
@@ -390,9 +389,15 @@ public:
             AudioFileUtils::addBWAVStartToMetadata (metadata, (SampleCount) tracktion::toSamples (punchRange.getStart(), rc->sampleRate));
             auto& wi = getWaveInput();
 
+            if (wi.isTrackDevice())
+                for (auto t : getAudioTracks (edit))
+                    if (&t->getWaveInputDevice() == &wi)
+                        { wi.setChannelConfiguration (t->getChannelConfiguration()); break; }
+
             rc->fileWriter = std::make_unique<AudioFileWriter> (AudioFile (edit.engine, recordedFile), format,
-                                                                wi.isStereoPair() ? 2 : 1,
-                                                                rc->sampleRate, wi.bitDepth, metadata, 0);
+                                                                (int) wi.getChannels().getNumChannels(),
+                                                                rc->sampleRate, wi.bitDepth, metadata, 0,
+                                                                wi.getChannelSet());
 
             if (rc->fileWriter->isOpen())
             {
@@ -432,7 +437,7 @@ public:
                 {
                     if ((rc->thumbnail = edit.engine.getRecordingThumbnailManager().getThumbnailFor (recordedFile)))
                     {
-                        rc->thumbnail->reset (wi.isStereoPair() ? 2 : 1, rc->sampleRate);
+                        rc->thumbnail->reset ((int) wi.getChannels().getNumChannels(), rc->sampleRate);
                         rc->thumbnail->punchInTime = punchRange.getStart();
                     }
                 }
@@ -493,8 +498,17 @@ public:
             }
         }
 
-        if (hasAddedContexts && ! edit.getTransport().isPlaying())
-            edit.getTransport().play (false);
+        if (hasAddedContexts)
+        {
+            // Close the meter gate so the user gets the same "waiting for trigger"
+            // visual feedback during recording as they do when auditioning the
+            // trigger level on the audio devices settings page.
+            if (getWaveInput().recordTriggerDb > -50.0f)
+                getWaveInput().setMeterGateClosed (true);
+
+            if (! edit.getTransport().isPlaying())
+                edit.getTransport().play (false);
+        }
 
         // Remove now empty contents and return the rest
         return std::move (erase_if_null (newContexts));
@@ -845,7 +859,7 @@ public:
                                                                 bool isLooping, bool isPunching, TimePosition loopEnd)
     {
         CRASH_TRACER
-        jassert (projectItem == nullptr || projectItem->getID().isValid());
+        jassert (projectItem == nullptr || projectItem->getProjectItemRef().isValid());
         auto& engine = edit.engine;
         auto& afm = engine.getAudioFileManager();
 
@@ -869,7 +883,7 @@ public:
         if (replaceOldClips && isPunching)
         {
             if (projectItem != nullptr)
-                newClip = insertWaveClip (destClipOwner, getNameForNewClip (destClipOwner), projectItem->getID(),
+                newClip = insertWaveClip (destClipOwner, getNameForNewClip (destClipOwner), projectItem->getProjectItemRef(),
                                           { { loopRange.getStart(), endPos }, {} }, DeleteExistingClips::yes);
             else
                 newClip = insertWaveClip (destClipOwner, getNameForNewClip (destClipOwner), recordedFile.getFile(),
@@ -881,7 +895,7 @@ public:
         else
         {
             if (projectItem != nullptr)
-                newClip = insertWaveClip (destClipOwner, getNameForNewClip (destClipOwner), projectItem->getID(),
+                newClip = insertWaveClip (destClipOwner, getNameForNewClip (destClipOwner), projectItem->getProjectItemRef(),
                                           { { rc.punchTimes.getStart(), endPos }, {} },
                                           replaceOldClips ? DeleteExistingClips::yes : DeleteExistingClips::no);
             else
@@ -926,7 +940,7 @@ public:
             if (extraTakes.size() > 0)
             {
                 for (auto& take : extraTakes)
-                    wc->addTake (take->getID());
+                    wc->addTake (take->getProjectItemRef());
             }
             else if (filesCreated.size() > 1)
             {
@@ -1079,7 +1093,7 @@ public:
             if (projectItem == nullptr)
                 continue;
 
-            jassert (projectItem->getID().isValid());
+            jassert (projectItem->getProjectItemRef().isValid());
 
             auto clipName = getNameForNewClip (*dstTrack);
             TimePosition start;
@@ -1103,7 +1117,7 @@ public:
                 }
                 else
                 {
-                    auto& pei = recordBuffer->editInfo[edit.getProjectItemID()];
+                    auto& pei = recordBuffer->editInfo[edit.getProjectItemRef()];
                     start = pei.lastEditTime + pei.pausedTime - recordedLength + adjust;
                     pei.lastEditTime = -1s;
                 }
@@ -1126,7 +1140,7 @@ public:
                 clipPos.time = clipPos.time.withStart (0s);
             }
 
-            auto newClip = dstTrack->insertWaveClip (clipName, projectItem->getID(), clipPos, false);
+            auto newClip = dstTrack->insertWaveClip (clipName, projectItem->getProjectItemRef(), clipPos, false);
 
             if (newClip == nullptr)
                 continue;
@@ -1141,11 +1155,7 @@ public:
             {
                 if (auto slot = getFreeSlot (*dstTrack))
                 {
-                    newClip->setUsesProxy (false);
-                    newClip->setStart (0_tp, false, true);
-
-                    if (! newClip->isLooping())
-                        newClip->setLoopRangeBeats ({ 0_bp, newClip->getLengthInBeats() });
+                    prepareClipForLauncher (*newClip);
 
                     newClip->removeFromParent();
                     slot->setClip (newClip.get());
@@ -1198,7 +1208,7 @@ public:
             inputBuffer.applyGain (0, numSamples, dbToGain (inputGainDb));
 
         if (measurerToUpdate != nullptr)
-            measurerToUpdate->processBuffer (inputBuffer, 0, numSamples);
+            getWaveInput().feedLevelMeasurerThroughGate (inputBuffer, 0, numSamples);
 
         if (retrospectiveBuffer != nullptr)
         {
@@ -1365,12 +1375,11 @@ protected:
 };
 
 //==============================================================================
-WaveInputDevice::WaveInputDevice (Engine& e, const juce::String& devType,
-                                  const WaveDeviceDescription& desc, DeviceType t)
-    : InputDevice (e, devType, desc.name, "wavein_" + juce::String::toHexString (desc.name.hashCode())),
-      deviceChannels (desc.channels),
+WaveInputDevice::WaveInputDevice (Engine& e, const WaveDeviceDescription& desc, DeviceType t)
+    : InputDevice (e, desc.name, "wavein_" + juce::String::toHexString (desc.name.hashCode())),
+      deviceDescription (desc),
       deviceType (t),
-      channelSet (createChannelSet (desc.channels))
+      channelSet (desc.channels.toChannelSet())
 {
     enabled = desc.enabled;
     loadProps();
@@ -1380,6 +1389,20 @@ WaveInputDevice::~WaveInputDevice()
 {
     notifyListenersOfDeletion();
     closeDevice();
+}
+
+void WaveInputDevice::setChannelConfiguration (const ChannelConfiguration& newConfig)
+{
+    deviceDescription.channels = newConfig;
+    channelSet = newConfig.toChannelSet();
+}
+
+juce::String WaveInputDevice::getDeviceTypeDescription() const
+{
+    if (deviceType == trackWaveDevice)
+        return TRANS("Track Wave Input");
+
+    return TRANS("Wave Audio Input");
 }
 
 juce::StringArray WaveInputDevice::getMergeModes()
@@ -1428,7 +1451,7 @@ void WaveInputDevice::setEnabled (bool b)
 
         if (! isTrackDevice())
         {
-            engine.getDeviceManager().setWaveInChannelsEnabled (deviceChannels, b);
+            engine.getDeviceManager().setDeviceEnabled (*this, b);
         }
         else
         {
@@ -1511,17 +1534,9 @@ void WaveInputDevice::saveProps()
 }
 
 //==============================================================================
-juce::String WaveInputDevice::getSelectableDescription()
-{
-    if (getDeviceType() == trackWaveDevice)
-        return getAlias() + " (" + getType() + ")";
-
-    return InputDevice::getSelectableDescription();
-}
-
 bool WaveInputDevice::isStereoPair() const
 {
-    return deviceChannels.size() == 2;
+    return deviceDescription.getNumChannels() == 2;
 }
 
 void WaveInputDevice::setStereoPair (bool stereo)
@@ -1532,12 +1547,67 @@ void WaveInputDevice::setStereoPair (bool stereo)
         return;
     }
 
-    auto& dm = engine.getDeviceManager();
+    engine.getDeviceManager().setDeviceNumChannels (*this, stereo ? 2 : 1);
+}
 
-    if (deviceChannels.size() == 2)
-        dm.setDeviceInChannelStereo (std::max (deviceChannels[0].indexInDevice, deviceChannels[1].indexInDevice), stereo);
-    else if (deviceChannels.size() == 1)
-        dm.setDeviceInChannelStereo (deviceChannels[0].indexInDevice, stereo);
+static bool shouldIncludeChannelCount (uint32_t num, uint32_t totalOptions)
+{
+    if (num <= 8)            return true;
+    if (num == 32)           return true;
+    if (num == 64)           return true;
+    if (num == 128)          return true;
+    if (num == totalOptions) return true;
+    return false;
+}
+
+static juce::String getChannelCountLabel (uint32_t num)
+{
+    auto canonical = ChannelConfiguration::canonical ((int) num);
+
+    for (const auto& preset : getChannelConfigurationPresets())
+        if (preset.config == canonical)
+            return preset.name;
+
+    return juce::String (num) + " " + TRANS("channels");
+}
+
+
+juce::PopupMenu WaveInputDevice::createChannelGroupMenu (bool includeSetAllChannelsOptions)
+{
+    juce::PopupMenu m;
+    auto& dm = engine.getDeviceManager();
+    auto currentNumChannels = deviceDescription.getNumChannels();
+    auto options = dm.getPossibleChannelGroupsForDevice (*this, DeviceManager::maxNumChannelsPerDevice);
+    auto totalOptions = (uint32_t) options.size();
+
+    for (uint32_t num = 1; num <= totalOptions; ++num)
+    {
+        if (shouldIncludeChannelCount (num, totalOptions))
+            m.addItem (getChannelCountLabel (num), true, num == currentNumChannels,
+                       [this, &dm, num] { dm.setDeviceNumChannels (*this, num); });
+    }
+
+    juce::PopupMenu otherMenu;
+
+    for (uint32_t num = 1; num <= totalOptions; ++num)
+        if (! shouldIncludeChannelCount (num, totalOptions))
+            otherMenu.addItem (getChannelCountLabel (num), true, num == currentNumChannels,
+                               [this, &dm, num] { dm.setDeviceNumChannels (*this, num); });
+
+    if (otherMenu.getNumItems() > 0)
+    {
+        m.addSeparator();
+        m.addSubMenu (TRANS("Other"), otherMenu);
+    }
+
+    if (includeSetAllChannelsOptions)
+    {
+        m.addSeparator();
+        m.addItem ("Set all to mono channels", [&dm] { dm.setAllWaveInputsToNumChannels (1); });
+        m.addItem ("Set all to stereo pairs",  [&dm] { dm.setAllWaveInputsToNumChannels (2); });
+    }
+
+    return m;
 }
 
 void WaveInputDevice::setRecordAdjustment (TimeDuration d)
@@ -1570,6 +1640,38 @@ void WaveInputDevice::setRecordTriggerDb (float newDB)
         changed();
         saveProps();
     }
+}
+
+void WaveInputDevice::setMeterGateClosed (bool shouldBeClosed)
+{
+    if (meterGateClosed.exchange (shouldBeClosed, std::memory_order_relaxed) != shouldBeClosed)
+        changed();
+}
+
+bool WaveInputDevice::isAnyRecordingActive() const
+{
+    const juce::ScopedLock sl (instanceLock);
+
+    for (auto i : instances)
+        if (i->isRecording())
+            return true;
+
+    return false;
+}
+
+void WaveInputDevice::feedLevelMeasurerThroughGate (juce::AudioBuffer<float>& buf, int start, int numSamples)
+{
+    if (meterGateClosed.load (std::memory_order_relaxed))
+    {
+        // Use the same convention as WaveRecordingContext: a trigger of -50dB or below means "no gate".
+        if (recordTriggerDb <= -50.0f
+            || gainToDb (buf.getMagnitude (start, numSamples)) > recordTriggerDb)
+            meterGateClosed.store (false, std::memory_order_relaxed);
+        else
+            return;
+    }
+
+    levelMeasurer.processBuffer (buf, start, numSamples);
 }
 
 juce::String WaveInputDevice::getFilenameMask() const
@@ -1679,16 +1781,36 @@ void WaveInputDevice::consumeNextAudioBlock (const float* const* allChannels, in
 {
     if (enabled)
     {
-        bool isFirst = true;
         const juce::ScopedLock sl (instanceLock);
 
-        // do this first, as writing to file trashes the buffer
-        for (auto i : instances)
+        if (instances.isEmpty())
         {
-            i->acceptInputBuffer (allChannels, numChannels, numSamples, streamTime,
-                                  isFirst ? &levelMeasurer : nullptr,
-                                  (! retrospectiveRecordLock) ? retrospectiveBuffer.get() : nullptr, isFirst);
-            isFirst = false;
+            auto& groupChannelSet = getChannelSet();
+            juce::AudioBuffer<float> buf (groupChannelSet.size(), numSamples);
+            buf.clear();
+
+            for (const auto& ci : getChannels())
+                if (juce::isPositiveAndBelow (ci.indexInDevice, numChannels))
+                    juce::FloatVectorOperations::copy (buf.getWritePointer (groupChannelSet.getChannelIndexForType (ci.channel)),
+                                                       allChannels[ci.indexInDevice], numSamples);
+
+            if (inputGainDb > 0.01f || inputGainDb < -0.01f)
+                buf.applyGain (0, numSamples, dbToGain (inputGainDb));
+
+            feedLevelMeasurerThroughGate (buf, 0, numSamples);
+        }
+        else
+        {
+            bool isFirst = true;
+
+            for (auto i : instances)
+            {
+                i->acceptInputBuffer (allChannels, numChannels, numSamples, streamTime,
+                                     isFirst ? &levelMeasurer : nullptr,
+                                     (! retrospectiveRecordLock) ? retrospectiveBuffer.get() : nullptr,
+                                     isFirst);
+                isFirst = false;
+            }
         }
     }
 }
@@ -1964,4 +2086,4 @@ void WaveInputRecordingThread::flushAndStop()
     hasWarned = false;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

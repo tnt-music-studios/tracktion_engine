@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class MidiPatchBayPlugin  : public Plugin
 {
@@ -28,11 +27,11 @@ public:
     juce::String getShortName (int) override                                { return TRANS("MIDIPatch"); }
     bool canBeAddedToClip() override                                        { return false; }
     bool canBeAddedToRack() override                                        { return true; }
+    BusLayout getBusses() const override   { return {}; }
     void initialise (const PluginInitialisationInfo&) override;
     void deinitialise() override;
     void applyToBuffer (const PluginRenderContext&) override;
     juce::String getSelectableDescription() override                        { return TRANS("MIDI Patch Bay Plugin"); }
-    bool takesAudioInput() override                                         { return false; }
     int getNumOutputChannelsGivenInputs (int) override                      { return 0; }
     void getChannelNames (juce::StringArray*, juce::StringArray*) override  {}
 
@@ -63,4 +62,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiPatchBayPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

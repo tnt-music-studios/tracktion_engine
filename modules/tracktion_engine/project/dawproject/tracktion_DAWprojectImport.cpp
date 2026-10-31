@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine { namespace dawproject
-{
+namespace tracktion::inline engine { namespace dawproject {
 
 //==============================================================================
 DAWprojectImporter::DAWprojectImporter (Engine& e, const ParseOptions& opts)
@@ -20,6 +19,8 @@ DAWprojectImporter::DAWprojectImporter (Engine& e, const ParseOptions& opts)
 //==============================================================================
 std::unique_ptr<Edit> DAWprojectImporter::importFromFile (const juce::File& file)
 {
+    sourceFileDirectory = file.getParentDirectory();
+
     juce::ZipFile zipFile (file);
 
     if (zipFile.getNumEntries() == 0)
@@ -113,6 +114,10 @@ std::unique_ptr<Edit> DAWprojectImporter::importFromXml (const juce::XmlElement&
     if (auto* arrangementElement = projectXml.getChildByName (xml::Arrangement))
         parseArrangement (*arrangementElement, *edit);
 
+    // Parse Scenes (clip launcher rows)
+    if (auto* scenesElement = projectXml.getChildByName (xml::Scenes))
+        parseScenes (*scenesElement, *edit);
+
     return edit;
 }
 
@@ -196,6 +201,11 @@ void DAWprojectImporter::parseTrack (const juce::XmlElement& trackElement, Edit&
         if (auto* channelElement = trackElement.getChildByName (xml::Channel))
             parseChannel (*channelElement, edit, newTrack.get());
 
+        // Tracks without a channel element still need the default plugins
+        if (auto* audioTrack = dynamic_cast<AudioTrack*> (newTrack.get()))
+            if (audioTrack->getVolumePlugin() == nullptr)
+                audioTrack->pluginList.addDefaultTrackPlugins (false);
+
         // Parse nested tracks
         for (auto* child : trackElement.getChildIterator())
         {
@@ -231,9 +241,13 @@ void DAWprojectImporter::parseChannel (const juce::XmlElement& channelElement, E
 
         if (auto* panElement = channelElement.getChildByName (xml::Pan))
         {
-            auto value = parseDouble (panElement->getStringAttribute (xml::value), 0.0);
             if (auto masterVol = edit.getMasterVolumePlugin())
-                masterVol->setPan (static_cast<float> (value));
+            {
+                if (panElement->getStringAttribute (xml::unit) == xml::normalized)
+                    masterVol->setPan (normalizedToPan (parseDouble (panElement->getStringAttribute (xml::value), 0.5)));
+                else
+                    masterVol->setPan (static_cast<float> (parseDouble (panElement->getStringAttribute (xml::value), 0.0)));
+            }
         }
 
         return;
@@ -246,6 +260,17 @@ void DAWprojectImporter::parseChannel (const juce::XmlElement& channelElement, E
     // Apply channel properties to track
     if (auto* audioTrack = dynamic_cast<AudioTrack*> (track))
     {
+        // Parse devices (plugins) first so the default plugins added below
+        // end up after them, keeping the fader/meter post-FX
+        if (auto* devicesElement = channelElement.getChildByName (xml::Devices))
+            parseDevices (*devicesElement, edit, *audioTrack);
+
+        // Most DAWs have per-track gain/pan/metering built in rather than as
+        // exported devices, so add the standard default plugins for the
+        // volume/pan values below to be applied to
+        if (audioTrack->getVolumePlugin() == nullptr)
+            audioTrack->pluginList.addDefaultTrackPlugins (false);
+
         // Parse volume
         if (auto* volumeElement = channelElement.getChildByName (xml::Volume))
         {
@@ -264,9 +289,13 @@ void DAWprojectImporter::parseChannel (const juce::XmlElement& channelElement, E
         // Parse pan
         if (auto* panElement = channelElement.getChildByName (xml::Pan))
         {
-            auto value = parseDouble (panElement->getStringAttribute (xml::value), 0.0);
             if (auto* volPlugin = audioTrack->getVolumePlugin())
-                volPlugin->setPan (static_cast<float> (value));
+            {
+                if (panElement->getStringAttribute (xml::unit) == xml::normalized)
+                    volPlugin->setPan (normalizedToPan (parseDouble (panElement->getStringAttribute (xml::value), 0.5)));
+                else
+                    volPlugin->setPan (static_cast<float> (parseDouble (panElement->getStringAttribute (xml::value), 0.0)));
+            }
         }
 
         // Parse mute
@@ -279,10 +308,6 @@ void DAWprojectImporter::parseChannel (const juce::XmlElement& channelElement, E
         // Parse solo
         auto solo = parseBool (channelElement.getStringAttribute (xml::solo), false);
         audioTrack->setSolo (solo);
-
-        // Parse devices (plugins)
-        if (auto* devicesElement = channelElement.getChildByName (xml::Devices))
-            parseDevices (*devicesElement, edit, *audioTrack);
     }
 }
 
@@ -409,52 +434,164 @@ void DAWprojectImporter::parseMarkers (const juce::XmlElement& markersElement, E
 }
 
 //==============================================================================
-void DAWprojectImporter::parseLanes (const juce::XmlElement& lanesElement, Edit& edit, Track* track)
+void DAWprojectImporter::parseLanes (const juce::XmlElement& lanesElement, Edit& edit, Track* track, bool positionIsBeats)
 {
     auto* clipTrack = dynamic_cast<ClipTrack*> (track);
     if (clipTrack == nullptr)
         return;
 
+    auto isBeats = positionIsBeats || isTimeUnitBeats (lanesElement);
+
     for (auto* child : lanesElement.getChildIterator())
     {
         if (child->hasTagName (xml::Clips))
-            parseClips (*child, edit, *clipTrack);
+            parseClips (*child, edit, *clipTrack, isBeats);
         else if (child->hasTagName (xml::Lanes))
-            parseLanes (*child, edit, track);
+            parseLanes (*child, edit, track, isBeats);
     }
 }
 
 //==============================================================================
-void DAWprojectImporter::parseClips (const juce::XmlElement& clipsElement, Edit&, ClipTrack& track)
+void DAWprojectImporter::parseScenes (const juce::XmlElement& scenesElement, Edit& edit)
+{
+    int numScenes = 0;
+    for (auto* child : scenesElement.getChildIterator())
+        if (child->hasTagName (xml::Scene))
+            ++numScenes;
+
+    if (numScenes == 0)
+        return;
+
+    // ensureNumberOfScenes also expands every track's ClipSlotList to the same length.
+    auto& sceneList = edit.getSceneList();
+    sceneList.ensureNumberOfScenes (numScenes);
+
+    int sceneIndex = 0;
+    for (auto* child : scenesElement.getChildIterator())
+    {
+        if (! child->hasTagName (xml::Scene))
+            continue;
+
+        if (auto* scene = sceneList.getScenes()[sceneIndex])
+        {
+            auto sceneName = child->getStringAttribute (xml::name);
+            if (sceneName.isNotEmpty())
+                scene->name = sceneName;
+
+            auto colorStr = child->getStringAttribute (xml::color);
+            if (colorStr.isNotEmpty())
+                scene->colour = dawprojectStringToColour (colorStr);
+        }
+
+        if (auto* contentElement = child->getChildByName (xml::Content))
+            parseSceneContent (*contentElement, edit, sceneIndex);
+
+        ++sceneIndex;
+    }
+}
+
+//==============================================================================
+void DAWprojectImporter::parseSceneContent (const juce::XmlElement& contentElement, Edit& edit, int sceneIndex)
+{
+    auto* topLanes = contentElement.getChildByName (xml::Lanes);
+    if (topLanes == nullptr)
+        return;
+
+    for (auto* trackLanes : topLanes->getChildIterator())
+    {
+        if (! trackLanes->hasTagName (xml::Lanes))
+            continue;
+
+        auto trackRef = trackLanes->getStringAttribute (xml::track);
+        auto it = idToTrack.find (trackRef);
+        if (it == idToTrack.end())
+            continue;
+
+        auto* audioTrack = dynamic_cast<AudioTrack*> (it->second);
+        if (audioTrack == nullptr)
+            continue;
+
+        auto slots = audioTrack->getClipSlotList().getClipSlots();
+        if (sceneIndex >= slots.size() || slots[sceneIndex] == nullptr)
+            continue;
+
+        auto* clipSlot = slots[sceneIndex];
+
+        auto isBeats = isTimeUnitBeats (*trackLanes);
+
+        // A clip-launcher slot holds at most one clip; if a malformed file lists
+        // several we take the first.
+        if (auto* clipsElement = trackLanes->getChildByName (xml::Clips))
+        {
+            for (auto* clipChild : clipsElement->getChildIterator())
+            {
+                if (clipChild->hasTagName (xml::Clip))
+                {
+                    parseClip (*clipChild, edit, *clipSlot, isBeats);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+//==============================================================================
+void DAWprojectImporter::parseClips (const juce::XmlElement& clipsElement, Edit&, ClipOwner& target, bool positionIsBeats)
 {
     for (auto* child : clipsElement.getChildIterator())
     {
         if (child->hasTagName (xml::Clip))
-            parseClip (*child, track.edit, track);
+            parseClip (*child, target.getClipOwnerEdit(), target, positionIsBeats);
     }
 }
 
 //==============================================================================
-Clip::Ptr DAWprojectImporter::parseClip (const juce::XmlElement& clipElement, Edit&, ClipTrack& track)
+Clip::Ptr DAWprojectImporter::parseClip (const juce::XmlElement& clipElement, Edit&, ClipOwner& target, bool positionIsBeats)
 {
     auto name = clipElement.getStringAttribute (xml::name);
     auto timeAttr = parseDouble (clipElement.getStringAttribute (xml::time), 0.0);
     auto durationAttr = parseDouble (clipElement.getStringAttribute (xml::duration), 0.0);
 
-    // Determine clip type based on content
-    // Content can be directly in the clip or inside a Lanes element
-    auto* audioElement = clipElement.getChildByName (xml::Audio);
-    auto* notesElement = clipElement.getChildByName (xml::Notes);
-    auto* lanesElement = clipElement.getChildByName (xml::Lanes);
-
-    // If there's a Lanes element, look for Notes/Audio inside it
-    if (lanesElement != nullptr)
+    // Convert from beats to seconds if the parent timeUnit is beats
+    if (positionIsBeats)
     {
-        if (notesElement == nullptr)
-            notesElement = lanesElement->getChildByName (xml::Notes);
-        if (audioElement == nullptr)
-            audioElement = lanesElement->getChildByName (xml::Audio);
+        auto& tempoSeq = target.getClipOwnerEdit().tempoSequence;
+        auto startTime = tempoSeq.toTime (BeatPosition::fromBeats (timeAttr));
+        auto endTime = tempoSeq.toTime (BeatPosition::fromBeats (timeAttr + durationAttr));
+        timeAttr = startTime.inSeconds();
+        durationAttr = (endTime - startTime).inSeconds();
     }
+
+    // Determine clip type based on content. Content may live directly inside the
+    // Clip, or be nested inside one or more Lanes elements (different DAWs vary).
+    // Returns both the matching child and the Lanes element that contains it.
+    struct DescendantSearch
+    {
+        const juce::XmlElement* match = nullptr;
+        const juce::XmlElement* parentLanes = nullptr;
+    };
+
+    std::function<DescendantSearch (const juce::XmlElement&, const char*, const juce::XmlElement*)> findDescendant
+        = [&] (const juce::XmlElement& element, const char* tag, const juce::XmlElement* parentLanes) -> DescendantSearch
+    {
+        if (auto* direct = element.getChildByName (tag))
+            return { direct, parentLanes };
+
+        for (auto* child : element.getChildIterator())
+            if (child->hasTagName (xml::Lanes))
+                if (auto found = findDescendant (*child, tag, child); found.match != nullptr)
+                    return found;
+
+        return {};
+    };
+
+    auto audioSearch = findDescendant (clipElement, xml::Audio, nullptr);
+    auto notesSearch = findDescendant (clipElement, xml::Notes, nullptr);
+
+    auto* audioElement = audioSearch.match;
+    auto* notesElement = notesSearch.match;
+    auto* lanesElement = notesSearch.parentLanes != nullptr ? notesSearch.parentLanes
+                                                            : clipElement.getChildByName (xml::Lanes);
 
     Clip::Ptr clip;
 
@@ -464,49 +601,42 @@ Clip::Ptr DAWprojectImporter::parseClip (const juce::XmlElement& clipElement, Ed
         auto* fileElement = audioElement->getChildByName (xml::File);
         if (fileElement != nullptr)
         {
-            auto path = fileElement->getStringAttribute (xml::path);
-            auto audioFile = resolveAudioFile (path);
+            auto path     = fileElement->getStringAttribute (xml::path);
+            auto external = parseBool (fileElement->getStringAttribute (xml::external), false);
+            auto audioFile = resolveAudioFile (path, external);
 
             if (audioFile.existsAsFile())
             {
-                auto* audioTrack = dynamic_cast<AudioTrack*> (&track);
-                if (audioTrack != nullptr)
-                {
-                    ClipPosition position { { TimePosition::fromSeconds (timeAttr),
-                                              TimeDuration::fromSeconds (durationAttr) }, {} };
+                ClipPosition position { { TimePosition::fromSeconds (timeAttr),
+                                          TimeDuration::fromSeconds (durationAttr) }, {} };
 
-                    auto waveClip = audioTrack->insertWaveClip (name, audioFile, position, false);
-                    if (waveClip != nullptr)
-                    {
-                        parseAudioClip (clipElement, *waveClip);
-                        clip = waveClip;
-                    }
+                auto waveClip = insertWaveClip (target, name, audioFile, position, DeleteExistingClips::no);
+                if (waveClip != nullptr)
+                {
+                    parseAudioClip (clipElement, *waveClip);
+                    clip = waveClip;
                 }
             }
         }
     }
     else if (notesElement != nullptr)
     {
-        // Create MIDI clip
-        auto* audioTrack = dynamic_cast<AudioTrack*> (&track);
-        if (audioTrack != nullptr)
+        // Create MIDI clip — works for both ClipTrack (arrangement) and ClipSlot (launcher).
+        TimeRange range { TimePosition::fromSeconds (timeAttr),
+                          TimePosition::fromSeconds (timeAttr + durationAttr) };
+
+        auto midiClip = insertMIDIClip (target, name, range);
+        if (midiClip != nullptr)
         {
-            TimeRange range { TimePosition::fromSeconds (timeAttr),
-                              TimePosition::fromSeconds (timeAttr + durationAttr) };
+            midiClip->setName (name);
+            parseNotes (*notesElement, *midiClip);
 
-            auto midiClip = audioTrack->insertMIDIClip (range, nullptr);
-            if (midiClip != nullptr)
-            {
-                midiClip->setName (name);
-                parseNotes (*notesElement, *midiClip);
+            // Parse controller data from Points elements in Lanes
+            if (lanesElement != nullptr)
+                parseControllerPoints (*lanesElement, *midiClip);
 
-                // Parse controller data from Points elements in Lanes
-                if (lanesElement != nullptr)
-                    parseControllerPoints (*lanesElement, *midiClip);
-
-                parseMidiClip (clipElement, *midiClip);
-                clip = midiClip;
-            }
+            parseMidiClip (clipElement, *midiClip);
+            clip = midiClip;
         }
     }
 
@@ -562,6 +692,9 @@ void DAWprojectImporter::parseAudioClip (const juce::XmlElement& clipElement, Wa
 //==============================================================================
 void DAWprojectImporter::parseMidiClip (const juce::XmlElement& clipElement, MidiClip& clip)
 {
+    auto contentTimeUnit = clipElement.getStringAttribute (xml::contentTimeUnit);
+    auto contentIsBeats = contentTimeUnit.isEmpty() || contentTimeUnit == xml::beats;
+
     // Parse playStart (offset)
     auto playStart = parseDouble (clipElement.getStringAttribute (xml::playStart), 0.0);
     if (playStart != 0.0)
@@ -573,13 +706,24 @@ void DAWprojectImporter::parseMidiClip (const juce::XmlElement& clipElement, Mid
 
     if (loopStart.isNotEmpty() && loopEnd.isNotEmpty())
     {
-        auto loopStartBeats = parseDouble (loopStart, 0.0);
-        auto loopEndBeats = parseDouble (loopEnd, 0.0);
+        auto loopStartVal = parseDouble (loopStart, 0.0);
+        auto loopEndVal = parseDouble (loopEnd, 0.0);
 
-        if (loopEndBeats > loopStartBeats)
+        if (loopEndVal > loopStartVal)
         {
-            clip.setLoopRangeBeats (BeatRange { BeatPosition::fromBeats (loopStartBeats),
-                                                BeatDuration::fromBeats (loopEndBeats - loopStartBeats) });
+            if (contentIsBeats)
+            {
+                clip.setLoopRangeBeats (BeatRange { BeatPosition::fromBeats (loopStartVal),
+                                                    BeatDuration::fromBeats (loopEndVal - loopStartVal) });
+            }
+            else
+            {
+                // Convert from seconds to beats
+                auto& tempoSeq = clip.edit.tempoSequence;
+                auto startBeat = tempoSeq.toBeats (TimePosition::fromSeconds (loopStartVal));
+                auto endBeat = tempoSeq.toBeats (TimePosition::fromSeconds (loopEndVal));
+                clip.setLoopRangeBeats (BeatRange { startBeat, endBeat - startBeat });
+            }
         }
     }
 }
@@ -770,12 +914,12 @@ Plugin::Ptr DAWprojectImporter::parsePlugin (const juce::XmlElement& pluginEleme
 }
 
 //==============================================================================
-juce::File DAWprojectImporter::resolveAudioFile (const juce::String& path)
+juce::File DAWprojectImporter::resolveAudioFile (const juce::String& path, bool external)
 {
     if (path.isEmpty())
         return {};
 
-    // Check if it's an absolute path
+    // Absolute paths are valid for both internal and external references.
     if (juce::File::isAbsolutePath (path))
     {
         juce::File file (path);
@@ -783,7 +927,21 @@ juce::File DAWprojectImporter::resolveAudioFile (const juce::String& path)
             return file;
     }
 
-    // Try relative to audio file directory
+    // External: path is relative to the original .dawproject file on disk,
+    // not to the contents of the zip archive.
+    if (external)
+    {
+        if (sourceFileDirectory != juce::File())
+        {
+            auto externalFile = sourceFileDirectory.getChildFile (path);
+            if (externalFile.existsAsFile())
+                return externalFile;
+        }
+
+        return {};
+    }
+
+    // Embedded: path is relative to the extracted-archive directory.
     auto relativeFile = audioFileDirectory.getChildFile (path);
     if (relativeFile.existsAsFile())
         return relativeFile;
@@ -800,15 +958,21 @@ void DAWprojectImporter::extractAudioFiles (juce::ZipFile& zipFile, const juce::
         if (entry == nullptr)
             continue;
 
-        auto filename = entry->filename;
+        const auto& filename = entry->filename;
 
-        // Extract files from audio/ directory
+        // Extract files from audio/ directory or any audio-format file. juce::ZipFile
+        // appends the entry's relative path to the directory we pass, so the file lands
+        // at <destDir>/<entry.filename> — matching the path stored in <File path="..."/>.
         if (filename.startsWith ("audio/") || filename.endsWithIgnoreCase (".wav") ||
             filename.endsWithIgnoreCase (".aiff") || filename.endsWithIgnoreCase (".mp3") ||
             filename.endsWithIgnoreCase (".flac") || filename.endsWithIgnoreCase (".ogg"))
         {
-            auto destFile = destDir.getChildFile (juce::File::createLegalFileName (filename.fromLastOccurrenceOf ("/", false, false)));
-            zipFile.uncompressEntry (i, destFile);
+            // Reject path traversal (e.g. "../escape.wav"). juce::ZipFile also enforces
+            // an isAChildOf check, but rejecting up-front avoids any partial side effects.
+            if (filename.contains (".."))
+                continue;
+
+            zipFile.uncompressEntry (i, destDir);
         }
     }
 }
@@ -834,4 +998,4 @@ bool DAWprojectImporter::isTimeUnitBeats (const juce::XmlElement& element) const
     return timeUnit.isEmpty() || timeUnit == xml::beats;
 }
 
-}}} // namespace tracktion::engine::dawproject
+}} // namespace tracktion::inline engine::dawproject

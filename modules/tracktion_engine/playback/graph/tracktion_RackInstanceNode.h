@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Sends an input Node to a Rack bus handling the channel mapping and channel gain levels.
@@ -18,7 +17,7 @@ class RackInstanceNode final    : public tracktion::graph::Node,
                                   public TracktionEngineNode
 {
 public:
-    using ChannelMap = std::array<std::tuple<int, int, AutomatableParameter::Ptr>, 2>;
+    using ChannelMap = std::vector<std::tuple<int, int, AutomatableParameter::Ptr>>;
 
     /** Creates a RackInstanceNode that maps an input node channel to an output channel
         and applies a gain parameter to each mapped channel.
@@ -42,8 +41,8 @@ private:
     ChannelMap channelMap;
     TimeDuration automationAdjustmentTime;
     int maxNumChannels = 0;
-    float lastGain[2];
+    std::vector<float> lastGain;
     bool canUseSourceBuffers = false, isInitialised = false;
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

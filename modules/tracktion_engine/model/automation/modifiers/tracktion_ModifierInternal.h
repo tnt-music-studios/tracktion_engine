@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace PredefinedWavetable
 {
@@ -41,11 +40,11 @@ namespace PredefinedWavetable
     static inline float getStepsUpSample (float phase, int totalNumSteps)
     {
         jassert (totalNumSteps > 1);
-        const float stageAmmount = 1.0f / (totalNumSteps - 1);
+        const float stageAmmount = 1.0f / float (totalNumSteps - 1);
 
-        const int stage = juce::jlimit (0, totalNumSteps - 1, (int) std::floor (phase * totalNumSteps));
+        const int stage = juce::jlimit (0, totalNumSteps - 1, (int) std::floor (phase * float (totalNumSteps)));
 
-        return stageAmmount * stage;
+        return stageAmmount * float (stage);
     }
 
     static inline float getStepsDownSample (float phase, int totalNumStages)
@@ -131,4 +130,4 @@ static inline AutomatableParameter* createSuffixedParameter (AutomatableEditItem
     return p;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -26,19 +25,19 @@ public:
     //==============================================================================
     struct ReferencedItem
     {
-        ProjectItemID itemID;
+        ProjectItemRef itemRef;
         double firstTimeUsed, lengthUsed;
 
         bool operator== (const ReferencedItem& other) const  { return firstTimeUsed == other.firstTimeUsed
                                                                         && lengthUsed == other.lengthUsed
-                                                                        && itemID == other.itemID; }
+                                                                        && itemRef == other.itemRef; }
         bool operator!= (const ReferencedItem& other) const  { return ! operator== (other); }
     };
 
     virtual juce::Array<ReferencedItem> getReferencedItems() = 0;
 
     virtual void reassignReferencedItem (const ReferencedItem&,
-                                         ProjectItemID newID,
+                                         ProjectItemRef newRef,
                                          double newStartTime) = 0;
 
     //==============================================================================
@@ -46,4 +45,4 @@ public:
     static juce::Array<Exportable*> addAllExportables (Edit&);
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

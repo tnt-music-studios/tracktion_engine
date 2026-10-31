@@ -8,13 +8,12 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Handles time/pitch stretching using various supported libraries.
 
-    Currently supported libraries are SoundTouch, RubberBand and Elastique.
+    Currently supported libraries are SoundTouch, RubberBand, Elastique and Signalsmith Stretch.
     These libraries may require additional module config options to enable and
     fall under their own licence terms so make sure to check those before
     distributing any code.
@@ -49,11 +48,15 @@ public:
         elastiqueDirectPro = 12,        /**< Elastique Direct Pro good all round (@see ElastiqueProOptions). */
         elastiqueDirectEfficient = 13,  /**< Elastique Direct lower quality and lower CPU usage. */
         elastiqueDirectMobile = 14,     /**< Elastique Direct lower quality and lower CPU usage, optimised for mobile. */
+        signalsmithDefault = 15,        /**< Signalsmith Stretch default quality preset. */
+        signalsmithCheaper = 16,        /**< Signalsmith Stretch cheaper/faster preset. */
 
        #if TRACKTION_ENABLE_TIMESTRETCH_ELASTIQUE
         defaultMode = elastiquePro      /**< Default mode. */
        #elif TRACKTION_ENABLE_TIMESTRETCH_RUBBERBAND
         defaultMode = rubberbandMelodic /**< Default mode. */
+       #elif TRACKTION_ENABLE_TIMESTRETCH_SIGNALSMITH
+        defaultMode = signalsmithDefault /**< Default mode. */
        #elif TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH
         defaultMode = soundtouchBetter  /**< Default mode. */
        #else
@@ -141,6 +144,9 @@ public:
 
     /** Returns the expected number of frames required to generate some output.
         This should be queried each block and the returned number of frames be passes to processData.
+        Passing this many frames to processData must always produce at least one block of output,
+        including the first call after a reset, so implementations account for any internal
+        buffering their algorithm needs before it emits. This never exceeds getMaxFramesNeeded.
     */
     int getFramesNeeded() const;
 
@@ -173,6 +179,16 @@ public:
     */
     int flush (float* const* outChannels);
 
+    /** Returns the latency in samples introduced by the stretching algorithm.
+        This can be used to report latency to the audio graph for compensation.
+    */
+    int getLatencySamples() const;
+
+    /** Returns the latency for a given mode and sample rate without creating a full stretcher.
+        Useful for reporting latency to the graph before the stretcher is initialised.
+    */
+    static int getLatencySamplesForMode (Mode, double sampleRate, bool realtime);
+
     /** @internal */
     struct Stretcher;
 
@@ -183,7 +199,7 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimeStretcher)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {

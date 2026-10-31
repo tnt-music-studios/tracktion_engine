@@ -9,8 +9,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 RackInstanceNode::RackInstanceNode (RackInstance::Ptr ri, std::unique_ptr<Node> inputNode, ChannelMap channelMapToUse,
                                     ProcessState& ps, SampleRateAndBlockSize info)
@@ -27,8 +26,10 @@ RackInstanceNode::RackInstanceNode (RackInstance::Ptr ri, std::unique_ptr<Node> 
                                    std::get<1> (chan) + 1);
     }
 
-    for (size_t chan = 0; chan < 2; ++chan)
-        lastGain[chan] = dbToGain (std::get<2> (channelMap[chan])->getCurrentValue());
+    lastGain.resize (channelMap.size());
+
+    for (size_t i = 0; i < channelMap.size(); ++i)
+        lastGain[i] = dbToGain (std::get<2> (channelMap[i])->getCurrentValue());
 
     plugin->baseClassInitialise ({ TimePosition(), info.sampleRate, info.blockSize });
     isInitialised = true;
@@ -71,7 +72,7 @@ void RackInstanceNode::prepareToPlay (const tracktion::graph::PlaybackInitialisa
     const auto inputNumChannels = input->getNodeProperties().numberOfChannels;
     const auto desiredNumChannels = props.numberOfChannels;
 
-    if (info.enableNodeMemorySharing && inputNumChannels >= desiredNumChannels)
+    if (info.enableNodeMemorySharing && inputNumChannels >= desiredNumChannels && input->canShareOutputBuffer())
     {
         canUseSourceBuffers = true;
         setOptimisations ({ tracktion::graph::ClearBuffers::no,
@@ -105,7 +106,7 @@ void RackInstanceNode::process (ProcessContext& pc)
     pc.buffers.midi.copyFrom (inputBuffers.midi);
 
     // Copy audio applying gain
-    int channel = 0;
+    size_t channel = 0;
 
     for (auto& chan : channelMap)
     {
@@ -146,4 +147,4 @@ void RackInstanceNode::process (ProcessContext& pc)
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

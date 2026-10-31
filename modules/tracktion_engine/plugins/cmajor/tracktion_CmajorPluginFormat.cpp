@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 juce::String getCmajorPatchPluginFormatName()
@@ -30,13 +29,17 @@ bool isCmajorPatchPluginFormat (const juce::PluginDescription& pd)
 //==============================================================================
 #if TRACKTION_ENABLE_CMAJOR
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
+// N.B. cmajor's cmaj_JUCEPlugin.h guards on JUCE_MAJOR_VERSION == 8, so on JUCE 9 it
+// falls back to the deprecated Font constructors. The vendored repo can't be patched,
+// so the deprecation warning is suppressed for this header only.
+JUCE_BEGIN_IGNORE_DEPRECATION_WARNINGS
 #include "cmajor/helpers/cmaj_JUCEPluginFormat.h"
+JUCE_END_IGNORE_DEPRECATION_WARNINGS
 #include "cmajor/helpers/cmaj_FileBasedCacheDatabase.h"
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 std::string getCmajorVersion() { return cmaj::Library::getVersion(); }
 
@@ -106,4 +109,4 @@ std::unique_ptr<juce::AudioPluginFormat> createCmajorPatchPluginFormat (tracktio
 
 #endif
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

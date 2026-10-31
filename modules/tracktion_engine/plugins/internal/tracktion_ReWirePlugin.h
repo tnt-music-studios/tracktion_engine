@@ -10,8 +10,7 @@
 
 #if TRACKTION_ENABLE_REWIRE
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /** */
@@ -83,11 +82,12 @@ public:
 
     void getChannelNames (juce::StringArray*, juce::StringArray*) override;
     int getNumOutputChannelsGivenInputs (int) override     { return 2; }
+    BusLayout getBusses() const override   { return BusLayout::singleStereoInOut(); }
 
     void prepareForNextBlock (TimePosition editTime) override;
     void applyToBuffer (const PluginRenderContext&) override;
 
-    juce::String getSelectableDescription() override    { return TRANS("ReWire Filter"); }
+    juce::String getSelectableDescription() override    { return TRANS("ReWire Plugin"); }
 
     bool takesMidiInput() override                      { return true; }
     bool takesAudioInput() override                     { return true; }
@@ -133,6 +133,6 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReWirePlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 #endif //TRACKTION_ENABLE_REWIRE

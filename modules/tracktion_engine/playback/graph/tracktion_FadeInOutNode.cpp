@@ -8,13 +8,13 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace fade_utils
 {
     inline int timeToSample (int numSamples, TimeRange editTime, TimePosition t)
     {
+        jassert (! editTime.isEmpty());
         return (int) (((t - editTime.getStart()) / editTime.getLength() * numSamples) + 0.5);
     }
 
@@ -201,10 +201,13 @@ bool FadeInOutNode::renderingNeeded (const TimeRange timelineRange)
     if (! getPlayHead().isPlaying())
         return false;
 
+    if (timelineRange.isEmpty())
+        return false;
+
     return (fadeIn + dynamicOffset).intersects (timelineRange)
         || (fadeOut + dynamicOffset).intersects (timelineRange)
         || (clearExtraSamples && (timelineRange.getStart() <= (fadeIn.getStart() + dynamicOffset)
                                   || timelineRange.getEnd() >= (fadeOut.getEnd() + dynamicOffset)));
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

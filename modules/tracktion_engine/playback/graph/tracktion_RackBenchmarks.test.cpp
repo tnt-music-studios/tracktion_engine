@@ -13,10 +13,10 @@
 #if TRACKTION_BENCHMARKS && ENGINE_BENCHMARKS_RACKS
 
 #include "tracktion_BenchmarkUtilities.h"
+#include "../../utilities/tracktion_TestUtilities.h"
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 using namespace tracktion::graph;
 
@@ -362,6 +362,6 @@ public:
 
 static RackBenchmarks rackBenchmarks;
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 #endif

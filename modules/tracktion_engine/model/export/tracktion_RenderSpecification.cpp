@@ -1,0 +1,695 @@
+/*
+    ,--.                     ,--.     ,--.  ,--.
+  ,-'  '-.,--.--.,--,--.,---.|  |,-.,-'  '-.`--' ,---. ,--,--,      Copyright 2024
+  '-.  .-'|  .--' ,-.  | .--'|     /'-.  .-',--.| .-. ||      \   Tracktion Software
+    |  |  |  |  \ '-'  \ `--.|  \  \  |  |  |  |' '-' '|  ||  |       Corporation
+    `---' `--'   `--`--'`---'`--'`--' `---' `--' `---' `--''--'    www.tracktion.com
+
+    Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
+*/
+
+namespace tracktion::inline engine
+{
+
+std::optional<RenderFormat> renderFormatFromString (juce::String s)
+{
+    return magic_enum::enum_cast<RenderFormat> (s.toStdString());
+}
+
+juce::String toString (RenderFormat f)
+{
+    return std::string (magic_enum::enum_name (f));
+}
+
+//==============================================================================
+juce::StringPairArray createTagMetadata (Edit& edit)
+{
+    juce::StringPairArray metadataList;
+    auto metadata = edit.getEditMetadata();
+
+    if (metadata.album.isNotEmpty())          metadataList.set ("id3album", metadata.album);
+    if (metadata.artist.isNotEmpty())         metadataList.set ("id3artist", metadata.artist);
+    if (metadata.comment.isNotEmpty())        metadataList.set ("id3comment", metadata.comment);
+    if (metadata.date.isNotEmpty())           metadataList.set ("id3date", metadata.date);
+    if (metadata.genre.isNotEmpty())          metadataList.set ("id3genre", metadata.genre);
+    if (metadata.title.isNotEmpty())          metadataList.set ("id3title", metadata.title);
+    if (metadata.trackNumber.isNotEmpty())    metadataList.set ("id3trackNumber", metadata.trackNumber);
+
+    return metadataList;
+}
+
+bool hasTagMetadata (Edit& edit)
+{
+    // Not createTagMetadata().size(): getEditMetadata() fills the date in with
+    // the current year even for an Edit that has never been given a tag, so
+    // that would answer yes for every Edit. What counts is whether any tag has
+    // actually been stored
+    auto meta = edit.state.getChildWithName (IDs::ID3VORBISMETADATA);
+
+    if (! meta.isValid())
+        return false;
+
+    for (auto& id : { IDs::album, IDs::artist, IDs::comment, IDs::date,
+                      IDs::genre, IDs::title, IDs::trackNumber })
+        if (meta[id].toString().isNotEmpty())
+            return true;
+
+    return false;
+}
+
+bool formatSupportsTagMetadata (RenderFormat f)
+{
+    switch (f)
+    {
+        case RenderFormat::wav:
+        case RenderFormat::ogg:
+        case RenderFormat::mp3:     return true;
+
+        case RenderFormat::aiff:
+        case RenderFormat::flac:
+        case RenderFormat::midi:    break;
+    }
+
+    return false;
+}
+
+/** The RIFF INFO key the WAV writer wants for a canonical id3 tag key, or
+    nullptr if that tag has no INFO equivalent. The WAV writer has no ID3
+    support at all, so this is the only way a .wav carries tags. ICMT is the
+    comment field readers expect (JUCE's riffInfoComment is the rarer CMNT) and
+    ICRD the date one.
+*/
+static const char* getRiffInfoKeyForTag (const juce::String& id3Key)
+{
+    if (id3Key == "id3album")           return juce::WavAudioFormat::riffInfoProductName;
+    if (id3Key == "id3artist")          return juce::WavAudioFormat::riffInfoArtist;
+    if (id3Key == "id3comment")         return juce::WavAudioFormat::riffInfoComment2;
+    if (id3Key == "id3date")            return juce::WavAudioFormat::riffInfoDateCreated;
+    if (id3Key == "id3genre")           return juce::WavAudioFormat::riffInfoGenre;
+    if (id3Key == "id3title")           return juce::WavAudioFormat::riffInfoTitle;
+    if (id3Key == "id3trackNumber")     return juce::WavAudioFormat::riffInfoTrackNumber;
+
+    return nullptr;
+}
+
+juce::StringPairArray translateMetadataForFormat (const juce::StringPairArray& metadata, RenderFormat format)
+{
+    juce::StringPairArray result;
+    auto& keys = metadata.getAllKeys();
+    auto& values = metadata.getAllValues();
+
+    for (int i = 0; i < metadata.size(); ++i)
+    {
+        const auto& key = keys[i];
+
+        // Anything that isn't a tag - ACID, BWAV - belongs to the format's own
+        // chunks and passes straight through
+        if (! key.startsWith ("id3"))
+        {
+            result.set (key, values[i]);
+            continue;
+        }
+
+        switch (format)
+        {
+            case RenderFormat::ogg:
+            case RenderFormat::mp3:
+                result.set (key, values[i]);
+                break;
+
+            case RenderFormat::wav:
+                if (auto riffKey = getRiffInfoKeyForTag (key))
+                    result.set (riffKey, values[i]);
+
+                break;
+
+            case RenderFormat::aiff:
+            case RenderFormat::flac:
+            case RenderFormat::midi:
+                break;
+        }
+    }
+
+    return result;
+}
+
+namespace render_spec_utils
+{
+    inline constexpr double maxWrapRemainderTailSeconds = 30.0;
+
+    /** The AudioFormat to write, or nullptr for a format that isn't audio. */
+    static juce::AudioFormat* getFormat (Engine& engine, RenderFormat format)
+    {
+        auto& affm = engine.getAudioFileFormatManager();
+
+        switch (format)
+        {
+            case RenderFormat::wav:     return affm.getWavFormat();
+            case RenderFormat::aiff:    return affm.getAiffFormat();
+            case RenderFormat::flac:    return affm.getFlacFormat();
+            case RenderFormat::ogg:     return affm.getOggFormat();
+            case RenderFormat::mp3:     return affm.getLameFormat();
+            case RenderFormat::midi:    break;
+        }
+
+        return nullptr;
+    }
+
+    static bool isKnownChannelLayout (const juce::String& layout)
+    {
+        return layout.isEmpty() || layout == "mono" || layout == "stereo"
+               || layout == "5.1" || layout == "7.1";
+    }
+
+    /** Finds the tracks for a set of IDs along with their indexes in the
+        Edit's track list, preserving the order the IDs were given in.
+    */
+    static juce::Array<std::pair<Track*, int>> resolveTracks (Edit& edit, const juce::Array<EditItemID>& ids)
+    {
+        juce::Array<std::pair<Track*, int>> result;
+        auto allTracks = getAllTracks (edit);
+
+        for (auto id : ids)
+        {
+            for (int i = 0; i < allTracks.size(); ++i)
+            {
+                if (allTracks[i]->itemID == id)
+                {
+                    result.add ({ allTracks[i], i });
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /** The clips that can be heard in a render: the spec's clips if it names
+        any, otherwise every clip on the rendered audio tracks - all of them for
+        a whole-Edit render, and a submix's children with the submix.
+    */
+    static juce::Array<Clip*> findRenderedClips (Edit& edit, const RenderSpecification& spec)
+    {
+        juce::Array<Clip*> clips;
+
+        if (! spec.clips.isEmpty())
+        {
+            for (auto id : spec.clips)
+                if (auto c = findClipForID (edit, id))
+                    clips.add (c);
+
+            return clips;
+        }
+
+        juce::Array<AudioTrack*> tracks;
+
+        if (spec.tracks.isEmpty())
+            tracks = getAudioTracks (edit);
+        else
+            for (auto [track, index] : resolveTracks (edit, spec.tracks))
+                if (auto at = dynamic_cast<AudioTrack*> (track))
+                    tracks.addIfNotAlreadyThere (at);
+                else
+                    for (auto sub : track->getAllAudioSubTracks (true))
+                        tracks.addIfNotAlreadyThere (sub);
+
+        for (auto t : tracks)
+            clips.addArray (t->getClips());
+
+        return clips;
+    }
+
+    /** How far past the end of the range a render with includeTails runs:
+        up to renderTailAllowanceSeconds, but never into the next clip on the
+        rendered tracks, and not at all if a clip plays across the end - the
+        render graph would keep playing it, so the "tail" would really be the
+        next section of the arrangement.
+    */
+    static TimeDuration findTailAllowance (Edit& edit, const RenderSpecification& spec, TimePosition rangeEnd)
+    {
+        auto limit = rangeEnd + TimeDuration::fromSeconds (renderTailAllowanceSeconds);
+
+        for (auto c : findRenderedClips (edit, spec))
+        {
+            const auto clipRange = c->getEditTimeRange();
+
+            if (clipRange.getStart() < rangeEnd && clipRange.getEnd() > rangeEnd)
+                return {};
+
+            if (clipRange.getStart() >= rangeEnd)
+                limit = std::min (limit, clipRange.getStart());
+        }
+
+        return limit - rangeEnd;
+    }
+
+    /** Like RenderOptions::findEndAllowance but substitutes the wrap-remainder
+        cap for infinite tail reports rather than ignoring them, and caps the
+        result so runaway feedback can't stall a render.
+    */
+    static TimeDuration findWrapRemainderTail (Edit& edit, const juce::Array<EditItemID>& trackIDs)
+    {
+        Plugin::Array plugins;
+
+        for (auto t : getAllTracks (edit))
+            if (trackIDs.isEmpty() || trackIDs.contains (t->itemID))
+                for (auto p : t->pluginList)
+                    plugins.addIfNotAlreadyThere (p);
+
+        double tail = 0.0;
+
+        for (auto p : plugins)
+            tail = std::max (tail, std::min (p->getTailLength(), maxWrapRemainderTailSeconds));
+
+        return TimeDuration::fromSeconds (tail);
+    }
+}
+
+//==============================================================================
+juce::var RenderSpecification::toJSON() const
+{
+    auto obj = new juce::DynamicObject();
+
+    obj->setProperty ("tracks", EditItemID::listToString (tracks));
+    obj->setProperty ("mutedTracks", EditItemID::listToString (mutedTracks));
+    obj->setProperty ("includeSourceTracks", includeSourceTracks);
+    obj->setProperty ("clips", EditItemID::listToString (clips));
+
+    if (time)
+    {
+        obj->setProperty ("startTime", time->getStart().inSeconds());
+        obj->setProperty ("endTime", time->getEnd().inSeconds());
+    }
+
+    obj->setProperty ("wrapRemainder", wrapRemainder);
+    obj->setProperty ("includeTails", includeTails);
+    obj->setProperty ("destination", destination.getFullPathName());
+    obj->setProperty ("format", toString (format));
+    obj->setProperty ("sampleRate", sampleRate);
+    obj->setProperty ("bitDepth", bitDepth);
+    obj->setProperty ("quality", quality);
+    obj->setProperty ("channelLayout", channelLayout);
+    obj->setProperty ("normalise", normalise);
+    obj->setProperty ("normaliseByRMS", normaliseByRMS);
+    obj->setProperty ("normaliseByLUFS", normaliseByLUFS);
+    obj->setProperty ("normaliseToLevelDb", normaliseToLevelDb);
+    obj->setProperty ("limitTruePeak", limitTruePeak);
+    obj->setProperty ("truePeakCeilingDb", truePeakCeilingDb);
+    obj->setProperty ("trimSilence", trimSilence);
+    obj->setProperty ("dither", dither);
+    obj->setProperty ("realTime", realTime);
+    obj->setProperty ("usePlugins", usePlugins);
+    obj->setProperty ("useMasterPlugins", useMasterPlugins);
+
+    if (metadata.size() > 0)
+    {
+        auto metaObj = new juce::DynamicObject();
+
+        for (int i = 0; i < metadata.size(); ++i)
+            metaObj->setProperty (metadata.getAllKeys()[i], metadata.getAllValues()[i]);
+
+        obj->setProperty ("metadata", juce::var (metaObj));
+    }
+
+    return juce::var (obj);
+}
+
+RenderSpecification RenderSpecification::fromJSON (const juce::var& v, juce::StringArray* unknownKeys)
+{
+    static const juce::StringArray knownKeys { "tracks", "mutedTracks", "includeSourceTracks", "clips", "startTime", "endTime",
+                                              "wrapRemainder", "includeTails", "destination", "format", "sampleRate",
+                                              "bitDepth", "quality", "channelLayout", "normalise",
+                                              "normaliseByRMS", "normaliseByLUFS", "normaliseToLevelDb",
+                                              "limitTruePeak", "truePeakCeilingDb", "trimSilence",
+                                              "dither", "realTime", "usePlugins", "useMasterPlugins",
+                                              "metadata" };
+    RenderSpecification spec;
+    auto obj = v.getDynamicObject();
+
+    if (obj == nullptr)
+        return spec;
+
+    if (unknownKeys != nullptr)
+        for (auto& prop : obj->getProperties())
+            if (! knownKeys.contains (prop.name.toString()))
+                unknownKeys->add (prop.name.toString());
+
+    auto get = [obj] (const char* key, juce::var defaultValue)
+    {
+        auto value = obj->getProperty (key);
+        return value.isVoid() ? defaultValue : value;
+    };
+
+    spec.tracks             = EditItemID::parseStringList (get ("tracks", juce::String()));
+    spec.mutedTracks        = EditItemID::parseStringList (get ("mutedTracks", juce::String()));
+    spec.includeSourceTracks = get ("includeSourceTracks", spec.includeSourceTracks);
+    spec.clips              = EditItemID::parseStringList (get ("clips", juce::String()));
+    spec.wrapRemainder      = get ("wrapRemainder", spec.wrapRemainder);
+    spec.includeTails       = get ("includeTails", spec.includeTails);
+    spec.destination        = juce::File (get ("destination", juce::String()).toString());
+    spec.format             = renderFormatFromString (get ("format", toString (spec.format)).toString())
+                                  .value_or (spec.format);
+    spec.sampleRate         = get ("sampleRate", spec.sampleRate);
+    spec.bitDepth           = get ("bitDepth", spec.bitDepth);
+    spec.quality            = get ("quality", spec.quality);
+    spec.channelLayout      = get ("channelLayout", spec.channelLayout);
+    spec.normalise          = get ("normalise", spec.normalise);
+    spec.normaliseByRMS     = get ("normaliseByRMS", spec.normaliseByRMS);
+    spec.normaliseByLUFS    = get ("normaliseByLUFS", spec.normaliseByLUFS);
+    spec.normaliseToLevelDb = get ("normaliseToLevelDb", spec.normaliseToLevelDb);
+    spec.limitTruePeak      = get ("limitTruePeak", spec.limitTruePeak);
+    spec.truePeakCeilingDb  = get ("truePeakCeilingDb", spec.truePeakCeilingDb);
+    spec.trimSilence        = get ("trimSilence", spec.trimSilence);
+    spec.dither             = get ("dither", spec.dither);
+    spec.realTime           = get ("realTime", spec.realTime);
+    spec.usePlugins         = get ("usePlugins", spec.usePlugins);
+    spec.useMasterPlugins   = get ("useMasterPlugins", spec.useMasterPlugins);
+
+    if (obj->hasProperty ("startTime") || obj->hasProperty ("endTime"))
+        spec.time = TimeRange (TimePosition::fromSeconds (static_cast<double> (get ("startTime", 0.0))),
+                               TimePosition::fromSeconds (static_cast<double> (get ("endTime", 0.0))));
+
+    if (auto metaObj = obj->getProperty ("metadata").getDynamicObject())
+        for (auto& prop : metaObj->getProperties())
+            spec.metadata.set (prop.name.toString(), prop.value.toString());
+
+    return spec;
+}
+
+//==============================================================================
+juce::Result validateRenderSpecification (Edit& edit, const RenderSpecification& spec)
+{
+    using namespace render_spec_utils;
+
+    if (spec.destination == juce::File())
+        return juce::Result::fail (TRANS("No destination has been set"));
+
+    if (spec.destination.isDirectory())
+        return juce::Result::fail (TRANS("The destination must be a file, not a directory"));
+
+    // The enum can only name formats we support, so the one thing left to check
+    // is whether this build actually has an encoder for it
+    if (! isMidiFormat (spec.format) && getFormat (edit.engine, spec.format) == nullptr)
+        return juce::Result::fail (spec.format == RenderFormat::mp3 ? TRANS("MP3 encoding is not available")
+                                                                    : TRANS("Unknown format: ") + toString (spec.format));
+
+    // The MIDI render still processes the graph, so it needs a sane rate, but
+    // the rest of the audio settings don't apply to it and aren't checked
+    if (spec.sampleRate < 8000.0 || spec.sampleRate > 384000.0)
+        return juce::Result::fail (TRANS("Invalid sample rate"));
+
+    if (! isMidiFormat (spec.format))
+    {
+        // Ask the format what it can do rather than hard coding it here, so this keeps
+        // up as formats gain support. Without it an unsupported combination gets as far
+        // as createWriterFor() returning nullptr, which surfaces as "Couldn't write to
+        // target file" - a filesystem complaint about a settings problem - or, worse,
+        // is silently ignored: MP3 tops out at 48kHz and simply encodes at that rate.
+        auto* audioFormat = getFormat (edit.engine, spec.format);
+
+        auto listOf = [] (const juce::Array<int>& values)
+        {
+            juce::StringArray strings;
+
+            for (auto v : values)
+                strings.add (juce::String (v));
+
+            return strings.joinIntoString (", ");
+        };
+
+        if (auto rates = audioFormat->getPossibleSampleRates();
+            ! rates.isEmpty() && ! rates.contains (juce::roundToInt (spec.sampleRate)))
+            return juce::Result::fail (TRANS("XZZX doesn't support a sample rate of YZZY")
+                                         .replace ("XZZX", toString (spec.format))
+                                         .replace ("YZZY", juce::String (spec.sampleRate, 0))
+                                        + ". " + TRANS("Supported rates: XZZX").replace ("XZZX", listOf (rates)));
+
+        // A format offering a single depth fixes its own and ignores whatever it is
+        // handed - Ogg reports 32 and MP3 16, but both encode the same file whatever
+        // is asked for - so there is nothing to validate in that case
+        if (auto depths = audioFormat->getPossibleBitDepths();
+            depths.size() > 1 && ! depths.contains (spec.bitDepth))
+            return juce::Result::fail (TRANS("XZZX doesn't support YZZY bit")
+                                         .replace ("XZZX", toString (spec.format))
+                                         .replace ("YZZY", juce::String (spec.bitDepth))
+                                        + ". " + TRANS("Supported bit depths: XZZX").replace ("XZZX", listOf (depths)));
+
+        if (! isKnownChannelLayout (spec.channelLayout))
+            return juce::Result::fail (TRANS("Unknown channel layout: ") + spec.channelLayout);
+    }
+
+    if (resolveTracks (edit, spec.tracks).size() != spec.tracks.size()
+        || resolveTracks (edit, spec.mutedTracks).size() != spec.mutedTracks.size())
+        return juce::Result::fail (TRANS("The specification contains tracks which aren't in this Edit"));
+
+    for (auto id : spec.clips)
+        if (findClipForID (edit, id) == nullptr)
+            return juce::Result::fail (TRANS("The specification contains clips which aren't in this Edit"));
+
+    if (spec.time ? spec.time->isEmpty() : (edit.getLength() == TimeDuration()))
+        return juce::Result::fail (TRANS("There is nothing to render in the time range"));
+
+    return juce::Result::ok();
+}
+
+//==============================================================================
+juce::Array<EditItemID> findStemSourceTracks (Edit& edit, const juce::Array<EditItemID>& stemTracks)
+{
+    // The tracks whose processing runs as part of the stem: the given tracks
+    // plus everything nested inside any folders among them
+    juce::Array<Track*> stemSet;
+
+    for (auto id : stemTracks)
+    {
+        if (auto track = findTrackForID (edit, id))
+        {
+            stemSet.addIfNotAlreadyThere (track);
+
+            for (auto sub : track->getAllSubTracks (true))
+                stemSet.addIfNotAlreadyThere (sub);
+        }
+    }
+
+    juce::Array<Track*> sources, visited;
+    auto toVisit = stemSet;
+
+    auto addSource = [&] (Track* source)
+    {
+        if (source != nullptr && ! stemSet.contains (source) && ! sources.contains (source))
+        {
+            sources.add (source);
+            toVisit.add (source);
+        }
+    };
+
+    // Fixpoint: tracks added as sources are visited in turn, so sources of
+    // sources are found; the visited list breaks feedback cycles
+    while (! toVisit.isEmpty())
+    {
+        auto track = toVisit.removeAndReturn (toVisit.size() - 1);
+
+        if (visited.contains (track))
+            continue;
+
+        visited.add (track);
+
+        // A folder's children process along with it, so their dependencies
+        // count too, but muting the folder alone silences the whole subtree
+        for (auto sub : track->getAllSubTracks (true))
+            toVisit.add (sub);
+
+        for (auto p : track->getAllPlugins())
+        {
+            if (auto sourceID = p->getSidechainSourceID(); sourceID.isValid())
+                addSource (findTrackForID (edit, sourceID));
+
+            // An aux return receives from every send on its bus
+            if (auto auxReturn = dynamic_cast<AuxReturnPlugin*> (p))
+                for (auto t : getAllTracks (edit))
+                    for (auto p2 : t->getAllPlugins())
+                        if (auto send = dynamic_cast<AuxSendPlugin*> (p2))
+                            if (send->getBusNumber() == auxReturn->busNumber.get())
+                                addSource (t);
+
+            // A rack is processed once, fed by all of its instances, so the
+            // stem needs the tracks hosting the rack's other instances
+            if (auto rackInstance = dynamic_cast<RackInstance*> (p))
+                if (rackInstance->type != nullptr)
+                    for (auto other : getRackInstancesInEditForType (*rackInstance->type))
+                        if (other != rackInstance)
+                            addSource (other->getOwnerTrack());
+        }
+    }
+
+    juce::Array<EditItemID> result;
+
+    for (auto t : sources)
+        result.add (t->itemID);
+
+    return result;
+}
+
+//==============================================================================
+std::optional<PlannedRenderJob> createRenderJob (Edit& edit, const RenderSpecification& spec)
+{
+    using namespace render_spec_utils;
+
+    if (validateRenderSpecification (edit, spec).failed())
+        return {};
+
+    const bool renderingMidi = isMidiFormat (spec.format);
+
+    Renderer::Parameters params (edit);
+    params.audioFormat           = renderingMidi ? nullptr : getFormat (edit.engine, spec.format);
+    params.createMidiFile        = renderingMidi;
+    params.sampleRateForAudio    = spec.sampleRate;
+    params.time                  = spec.time.value_or (TimeRange (TimePosition(), toPosition (edit.getLength())));
+    params.realTimeRender        = spec.realTime;
+    params.usePlugins            = spec.usePlugins;
+    params.useMasterPlugins      = spec.useMasterPlugins;
+    params.canRenderInMono       = false;
+    params.destFile              = spec.destination;
+
+    // Everything below shapes the rendered audio, so a MIDI render leaves it at
+    // its defaults rather than carrying settings which silently do nothing
+    if (! renderingMidi)
+    {
+        params.bitDepth              = spec.bitDepth;
+        params.quality               = spec.quality;
+        params.shouldNormalise       = spec.normalise;
+        params.shouldNormaliseByRMS  = spec.normaliseByRMS;
+        params.shouldNormaliseByLUFS = spec.normaliseByLUFS;
+        params.normaliseToLevelDb    = spec.normaliseToLevelDb;
+        params.limitTruePeak         = spec.limitTruePeak;
+        params.truePeakCeilingDb     = spec.truePeakCeilingDb;
+        params.trimSilenceAtEnds     = spec.trimSilence && ! spec.wrapRemainder;
+        params.ditheringEnabled      = spec.dither;
+        params.metadata              = translateMetadataForFormat (spec.metadata, spec.format);
+
+        // Auto is as wide as the widest device the Edit plays through, not the render
+        // graph, which a multi-output plugin can widen past the Edit's own layout
+        if (spec.channelLayout == "mono")           params.mustRenderInMono = true;
+        else if (spec.channelLayout == "stereo")    params.channelConfig = ChannelConfiguration::stereo();
+        else if (spec.channelLayout == "5.1")       params.channelConfig = ChannelConfiguration::surround5_1();
+        else if (spec.channelLayout == "7.1")       params.channelConfig = ChannelConfiguration::surround7_1();
+        else                                        params.channelConfig = ChannelConfiguration::canonical (std::max (2, getWidestOutputDeviceChannelCount (edit)));
+
+        if (spec.wrapRemainder)
+        {
+            params.wrapRemainder = true;
+            params.endAllowance = findWrapRemainderTail (edit, spec.tracks);
+        }
+        else if (spec.includeTails)
+        {
+            // The render context stops early once the output falls silent,
+            // so this is an upper bound rather than a fixed length
+            params.endAllowance = findTailAllowance (edit, spec, params.time.getEnd());
+        }
+    }
+
+    auto resolved = resolveTracks (edit, spec.tracks);
+
+    for (auto [track, index] : resolved)
+        params.tracksToDo.setBit (index);
+
+    for (auto id : spec.clips)
+        if (auto clip = findClipForID (edit, id))
+            params.allowedClips.add (clip);
+
+    auto mutedTracks = spec.mutedTracks;
+
+    if (spec.includeSourceTracks && ! spec.tracks.isEmpty())
+    {
+        // The solver finds the tracks this stem depends on for its sound;
+        // they render muted just like the explicitly-listed ones
+        auto seed = spec.tracks;
+        seed.addArray (spec.mutedTracks);
+
+        for (auto id : findStemSourceTracks (edit, seed))
+            mutedTracks.addIfNotAlreadyThere (id);
+    }
+
+    // Muted tracks are part of the graph so they can feed the rendered tracks'
+    // processing; the queue mutes them in the Edit while the job runs, and the
+    // graph is told to keep them processing despite the mute
+    if (! mutedTracks.isEmpty() && ! params.tracksToDo.isZero())
+    {
+        for (auto [track, index] : resolveTracks (edit, mutedTracks))
+            params.tracksToDo.setBit (index);
+
+        params.tracksToProcessWhileMuted = mutedTracks;
+    }
+
+    auto name = resolved.size() == 1 ? resolved.getFirst().first->getName()
+                                     : spec.destination.getFileNameWithoutExtension();
+
+    return PlannedRenderJob { name, std::move (params), mutedTracks };
+}
+
+int getWidestOutputDeviceChannelCount (Edit& edit)
+{
+    int widest = 0;
+
+    for (auto t : getAllTracks (edit))
+    {
+        // A submix's children play through the submix, which counts its own output
+        if (t->isPartOfSubmix())
+            continue;
+
+        if (auto output = getTrackOutput (*t))
+            if (auto device = dynamic_cast<WaveOutputDevice*> (output->getOutputDevice (true)))
+                if (device->isEnabled())
+                    widest = std::max (widest, device->getChannels().getNumChannels());
+    }
+
+    return widest;
+}
+
+std::vector<RenderSpecification> createPerTrackSpecifications (Edit& edit,
+                                                               const RenderSpecification& base,
+                                                               const juce::File& directory)
+{
+    using namespace render_spec_utils;
+
+    juce::String extension (".mid");
+
+    if (! isMidiFormat (base.format))
+    {
+        auto format = getFormat (edit.engine, base.format);
+
+        if (format == nullptr)
+            return {};
+
+        extension = format->getFileExtensions()[0];
+    }
+
+    auto tracksAndIndexes = resolveTracks (edit, base.tracks);
+
+    if (tracksAndIndexes.isEmpty() && base.tracks.isEmpty())
+        for (auto at : getAudioTracks (edit))
+            tracksAndIndexes.add ({ at, getAllTracks (edit).indexOf (at) });
+
+    std::vector<RenderSpecification> specs;
+    juce::StringArray usedNames;
+
+    for (auto [track, index] : tracksAndIndexes)
+    {
+        // Uniquify against the other tracks in this batch as well as the disk,
+        // so identically-named tracks don't collide on the same file
+        auto name = juce::File::createLegalFileName (track->getName());
+
+        for (int suffix = 2; usedNames.contains (name); ++suffix)
+            name = juce::File::createLegalFileName (track->getName()) + " " + juce::String (suffix);
+
+        usedNames.add (name);
+
+        auto spec = base;
+        spec.tracks = { track->itemID };
+        spec.destination = directory.getNonexistentChildFile (name, extension, false);
+        specs.push_back (std::move (spec));
+    }
+
+    return specs;
+}
+
+} // namespace tracktion::inline engine

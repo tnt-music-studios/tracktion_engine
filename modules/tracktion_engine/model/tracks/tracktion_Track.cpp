@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 Track::Track (Edit& ed, const juce::ValueTree& v, bool hasModifierList)
     : EditItem (ed, v), state (v), pluginList (ed)
@@ -169,6 +168,19 @@ Track* Track::getSiblingTrack (int delta, bool keepWithinSameParent) const
 }
 
 //==============================================================================
+void Track::unfreeze (FreezeType type)
+{
+    if (type == anyFreeze)
+    {
+        unfreeze (groupFreeze);
+        unfreeze (individualFreeze);
+        return;
+    }
+
+    [[maybe_unused]] const auto result = setFrozen (false, type);
+    jassert (result.wasOk()); // Unfreezing shouldn't be able to fail
+}
+
 bool Track::isProcessing (bool includeParents) const
 {
     if (includeParents)
@@ -256,22 +268,57 @@ bool Track::hasFreezePointPlugin() const
     return false;
 }
 
-juce::Array<AutomatableEditItem*> Track::getAllAutomatableEditItems() const
+std::vector<AutomatableEditItem*> Track::getAllAutomatableEditItems() const
 {
-    juce::Array<AutomatableEditItem*> destArray;
+    std::vector<AutomatableEditItem*> items;
     auto plugins = getAllPlugins();
-    destArray.addArray (plugins);
+
+    for (auto p : plugins)
+        items.push_back (p);
 
     if (modifierList != nullptr)
         for (auto m : modifierList->getModifiers())
             if (auto aei = dynamic_cast<AutomatableEditItem*> (m))
-                destArray.add (aei);
+                items.push_back (aei);
 
     for (auto p : plugins)
         if (auto mpl = p->getMacroParameterList())
-            destArray.add (mpl);
+            items.push_back (mpl);
 
-    return destArray;
+    for (auto p : plugins)
+    {
+        if (auto ri = dynamic_cast<RackInstance*> (p))
+        {
+            if (auto type = ri->type)
+            {
+                if (auto mpl = type->getMacroParameterList())
+                    items.push_back (mpl);
+
+                for (auto rackPlugin : type->getPlugins())
+                {
+                    items.push_back (rackPlugin);
+
+                    if (auto mpl = rackPlugin->getMacroParameterList())
+                        items.push_back (mpl);
+                }
+
+                for (auto m : type->getModifierList().getModifiers())
+                    if (auto aei = dynamic_cast<AutomatableEditItem*> (m))
+                        items.push_back (aei);
+            }
+        }
+    }
+
+    // Deduplicate, preserving insertion (plugin chain) order
+    std::vector<AutomatableEditItem*> deduped;
+    deduped.reserve (items.size());
+    std::set<AutomatableEditItem*> seen;
+
+    for (auto item : items)
+        if (seen.insert (item).second)
+            deduped.push_back (item);
+
+    return deduped;
 }
 
 Plugin::Array Track::getAllPlugins() const
@@ -444,38 +491,6 @@ bool Track::isAChildOf (const Track& t) const
     return false;
 }
 
-void Track::insertSpaceIntoTrack (TimePosition time, TimeDuration amountOfSpace)
-{
-    // shift up any automation curves too..
-    auto um = getUndoManager_p (edit);
-
-    for (auto p : pluginList)
-    {
-        for (int j = p->getNumAutomatableParameters(); --j >= 0;)
-        {
-            if (auto param = p->getAutomatableParameter (j))
-            {
-                auto& curve = param->getCurve();
-                auto defaultValue = param->getCurrentBaseValue();
-                auto valueAtInsertionTime = curve.getValueAt (time, defaultValue);
-
-                for (int k = curve.getNumPoints(); --k >= 0;)
-                    if (curve.getPointTime (k) >= time)
-                        curve.movePoint (*param, k,
-                                         curve.getPointTime (k) + amountOfSpace,
-                                         curve.getPointValue (k), false,
-                                         um);
-
-                if (! juce::approximatelyEqual (valueAtInsertionTime, curve.getValueAt (time, defaultValue)))
-                    curve.addPoint (time, valueAtInsertionTime, 0.0f, um);
-
-                if (! juce::approximatelyEqual (valueAtInsertionTime, curve.getValueAt (time + amountOfSpace, defaultValue)))
-                    curve.addPoint (time + amountOfSpace, valueAtInsertionTime, 0.0f, um);
-            }
-        }
-    }
-}
-
 void Track::updateTrackList()
 {
     CRASH_TRACER
@@ -625,4 +640,4 @@ void Track::handleAsyncUpdate()
     pluginList.updateTrackProperties();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

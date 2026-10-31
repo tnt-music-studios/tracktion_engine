@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 ProjectManager::ProjectManager (Engine& e)
     : engine (e)
@@ -142,6 +141,7 @@ static void findProjects (ProjectManager& pm, const juce::ValueTree& folder,
 
 juce::ReferenceCountedArray<Project> ProjectManager::getAllProjects()
 {
+    const juce::ScopedLock sl (lock);
     juce::ReferenceCountedArray<Project> list;
     findProjects (*this, folders, list);
     return list;
@@ -149,16 +149,17 @@ juce::ReferenceCountedArray<Project> ProjectManager::getAllProjects()
 
 juce::ReferenceCountedArray<Project> ProjectManager::getAllProjects (const juce::ValueTree& folder)
 {
+    const juce::ScopedLock sl (lock);
     juce::ReferenceCountedArray<Project> list;
     findProjects (*this, folder, list);
     return list;
 }
 
-juce::ValueTree ProjectManager::getActiveProjectsFolder()     { return folders.getChildWithName (IDs::ACTIVE); }
-juce::ValueTree ProjectManager::getLibraryProjectsFolder()    { return folders.getChildWithName (IDs::LIBRARY); }
+juce::ValueTree ProjectManager::getActiveProjectsFolder()                      { return folders.getChildWithName (IDs::ACTIVE); }
+juce::ValueTree ProjectManager::getLibraryProjectsFolder()                     { return folders.getChildWithName (IDs::LIBRARY); }
 
 //==============================================================================
-Project::Ptr ProjectManager::findProjectWithId (const juce::ValueTree& folder, int pid)
+Project::Ptr ProjectManager::findProjectWithId (const juce::ValueTree& folder, ProjectID pid)
 {
     if (auto p = getProjectFrom (folder))
         if (p->getProjectID() == pid)
@@ -217,11 +218,11 @@ Project::Ptr ProjectManager::getProjectFrom (const juce::ValueTree& v,
     return {};
 }
 
-Project::Ptr ProjectManager::getProject (int pid)
+Project::Ptr ProjectManager::getProject (ProjectID pid)
 {
     const juce::ScopedLock sl (lock);
 
-    for (auto* p : openProjects)
+    for (auto p : openProjects)
         if (p->getProjectID() == pid)
             return p;
 
@@ -232,7 +233,7 @@ Project::Ptr ProjectManager::getProject (const juce::File& f)
 {
     const juce::ScopedLock sl (lock);
 
-    for (auto* p : openProjects)
+    for (auto p : openProjects)
         if (p->getProjectFile() == f)
             return p;
 
@@ -245,19 +246,24 @@ Project::Ptr ProjectManager::addProjectToList (const juce::File& f,
                                                juce::ValueTree folderToAddTo,
                                                int index)
 {
-    if (f.existsAsFile() && isTracktionProjectFile (f))
+    if ((f.existsAsFile() && isTracktionProjectFile (f)) || f.isDirectory())
     {
         const juce::ScopedLock sl (lock);
 
         if (auto existing = findProjectWithFile (folders, f))
             return existing;
 
-        auto p = createNewProject (f);
+        // Reuse an already-open project for this file/folder if one exists
+        auto p = getProject (f);
+
+        if (p == nullptr)
+            p = createNewProject (f);
 
         if (p->isValid())
         {
-            if (auto existing = findProjectWithId (folders, p->getProjectID()))
-                return existing;
+            if (p->getProjectID().isValid())
+                if (auto existing = findProjectWithId (folders, p->getProjectID()))
+                    return existing;
 
             auto v = createValueTree (IDs::PROJECT,
                                       IDs::file, f.getFullPathName());
@@ -354,6 +360,7 @@ static bool getValueTreeFor (const juce::ValueTree& folder, const Project* proj,
 
 juce::ValueTree ProjectManager::findFolderContaining (const Project& p) const
 {
+    const juce::ScopedLock sl (lock);
     juce::ValueTree result;
 
     if (getValueTreeFor (folders, &p, result))
@@ -364,6 +371,7 @@ juce::ValueTree ProjectManager::findFolderContaining (const Project& p) const
 
 juce::ValueTree ProjectManager::getFolderItemFor (const Project& p) const
 {
+    const juce::ScopedLock sl (lock);
     juce::ValueTree result;
 
     if (getValueTreeFor (folders, &p, result))
@@ -374,6 +382,7 @@ juce::ValueTree ProjectManager::getFolderItemFor (const Project& p) const
 
 int ProjectManager::getFolderIndexFor (const Project& p) const
 {
+    const juce::ScopedLock sl (lock);
     juce::ValueTree result;
 
     if (getValueTreeFor (folders, &p, result))
@@ -384,36 +393,84 @@ int ProjectManager::getFolderIndexFor (const Project& p) const
 
 void ProjectManager::updateProjectFile (Project& p, const juce::File& f)
 {
+    const juce::ScopedLock sl (lock);
     juce::ValueTree result;
 
     if (getValueTreeFor (folders, &p, result, false))
         result.setProperty (IDs::file, f.getFullPathName(), nullptr);
 }
 
-ProjectItem::Ptr ProjectManager::getProjectItem (ProjectItemID id)
+ProjectItem::Ptr ProjectManager::getProjectItem (const ProjectItemRef& ref)
 {
-    if (auto p = getProject (id.getProjectID()))
-        return p->getProjectItemForID (id);
+    if (auto pid = ref.getProjectItemID())
+        if (auto p = getProject (pid->getProjectID()))
+            return p->getProjectItemFor (ref);
+
+    // For path-based refs, try the owner project
+    if (auto p = ref.getProject())
+        return p->getProjectItemFor (ref);
+
+    // Path-based ref without an owner — search all projects
+    if (! ref.isProjectItemID())
+    {
+        const juce::ScopedLock sl (lock);
+
+        for (auto p : openProjects)
+            if (auto item = p->getProjectItemFor (ref))
+                return item;
+    }
 
     return {};
+}
+
+ProjectItem::Ptr ProjectManager::getProjectItem (juce::File file)
+{
+    for (auto p : openProjects)
+        if (auto pi = p->getProjectItemForFile (file))
+            return pi;
+
+    for (auto p : getAllProjects())
+        if (auto pi = p->getProjectItemForFile (file))
+            return pi;
+
+    return {};
+}
+
+ProjectItem::Ptr ProjectManager::getProjectItem (ProjectItemID id)
+{
+    return getProjectItem (ProjectItemRef (id));
 }
 
 ProjectItem::Ptr ProjectManager::getProjectItem (const Edit& ed)
 {
-    return getProjectItem (ed.getProjectItemID());
+    return getProjectItem (ed.getProjectItemRef());
 }
 
 Project::Ptr ProjectManager::getProject (const Edit& ed)
 {
-    return getProject (ed.getProjectItemID().getProjectID());
+    auto ref = ed.getProjectItemRef();
+
+    if (auto pid = ref.getProjectItemID())
+        if (auto p = getProject (pid->getProjectID()))
+            return p;
+
+    if (auto p = ref.getProject())
+        return p;
+
+    return {};
+}
+
+juce::File ProjectManager::findSourceFile (const ProjectItemRef& ref)
+{
+    if (auto i = getProjectItem (ref))
+        return i->getSourceFile();
+
+    return {};
 }
 
 juce::File ProjectManager::findSourceFile (ProjectItemID id)
 {
-    if (auto i = getProjectItem (id))
-        return i->getSourceFile();
-
-    return {};
+    return findSourceFile (ProjectItemRef (id));
 }
 
 void ProjectManager::saveAllProjects()
@@ -429,13 +486,26 @@ Project::Ptr ProjectManager::createNewProject (const juce::File& projectFile)
     return new Project (engine, *this, projectFile);
 }
 
-Project::Ptr ProjectManager::createNewProject (const juce::File& projectFile, juce::ValueTree folderToAddTo)
+Project::Ptr ProjectManager::createNewProject (const juce::File& projectFile,
+                                                juce::ValueTree folderToAddTo,
+                                                ProjectType projectType)
 {
+    // The backend is determined by whether projectFile is a directory, so for a
+    // folder-based project the caller must create the directory before calling this
+    jassert (projectType == ProjectType::folderBased ? projectFile.isDirectory()
+                                                     : ! projectFile.isDirectory());
+    juce::ignoreUnused (projectType);
+
     const juce::ScopedLock sl (lock);
 
     auto newProj = createNewProject (projectFile);
     newProj->createNewProjectId();
-    newProj->setName (projectFile.getFileName().upToLastOccurrenceOf (".", false, false));
+
+    // A folder-based project's name is its folder name, so renaming it here
+    // would move the folder (e.g. "Song v1.2" to "Song v1")
+    if (! newProj->isFolderBased())
+        newProj->setName (projectFile.getFileName().upToLastOccurrenceOf (".", false, false));
+
     newProj->setDescription (TRANS("Created") + ": " + juce::Time::getCurrentTime().toString (true, false));
 
     if (newProj->save())
@@ -467,74 +537,137 @@ Project::Ptr ProjectManager::createNewProject (const juce::File& projectFile, ju
     return newProj;
 }
 
+/** An Edit extracted from a template keeps the template's creationTime and the file times stored
+    in the archive, so this re-stamps it as created now. Rewriting the file also updates its
+    modification time.
+*/
+static void markTemplateEditAsNew (const juce::File& editFile)
+{
+    if (auto xml = juce::parseXMLIfTagMatches (editFile, IDs::EDIT))
+    {
+        xml->setAttribute (IDs::creationTime, juce::String (juce::Time::getCurrentTime().toMilliseconds()));
+        xml->writeTo (editFile);
+    }
+}
+
 Project::Ptr ProjectManager::createNewProjectFromTemplate (const juce::String& name, const juce::File& lastPath,
-                                                           const juce::File& archiveFile, juce::ValueTree folder)
+                                                           const juce::File& archiveFile, juce::ValueTree folder,
+                                                           ProjectType projectType)
 {
     auto extractPath = lastPath.getNonexistentChildFile (juce::File::createLegalFileName (name), {});
 
     if (! extractPath.createDirectory())
         return {};
 
-    TracktionArchiveFile archive (engine, archiveFile);
-
     Project::Ptr proj;
     bool aborted = false;
     juce::Array<juce::File> filesCreated;
+    const bool isLegacy = isLegacyArchive (engine, archiveFile);
 
-    if (! archive.extractAllAsTask (extractPath, false, filesCreated, aborted))
-        TRACKTION_LOG_ERROR("Unable to extract all files from archive: " + archiveFile.getFullPathName());
+    if (isLegacy)
+    {
+        legacy::TracktionArchiveFile archive (engine, archiveFile);
+
+        if (! archive.extractAllAsTask (extractPath, false, filesCreated, aborted))
+            TRACKTION_LOG_ERROR("Unable to extract all files from archive: " + archiveFile.getFullPathName());
+    }
+    else
+    {
+        juce::ZipFile zip (archiveFile);
+        auto result = zip.uncompressTo (extractPath, true);
+
+        if (result.failed())
+        {
+            TRACKTION_LOG_ERROR("Unable to extract all files from archive: " + archiveFile.getFullPathName()
+                                + " - " + result.getErrorMessage());
+        }
+        else
+        {
+            extractPath.findChildFiles (filesCreated, juce::File::findFiles, true);
+        }
+    }
 
     if (! aborted)
     {
-        for (auto& f : filesCreated)
+        // New-style archives produce a folder-based project: extractPath itself is the project.
+        // Legacy archives must always go through the file-based flow below so that ID remapping
+        // and the optional conversion to a folder-based project happen.
+        if (! isLegacy && isTracktionProjectFolder (extractPath))
         {
-            if (isTracktionProjectFile (f))
+            const juce::ScopedLock sl (lock);
+            proj = addProjectToList (extractPath, true, folder);
+        }
+        else
+        {
+            for (auto& f : filesCreated)
             {
-                const juce::ScopedLock sl (lock);
-
-                auto p = createNewProject (f);
-
-                auto oldID = p->getProjectID();
-                p->createNewProjectId();
-
+                if (isTracktionProjectFile (f))
                 {
-                    auto newID = p->getProjectID();
-                    p->redirectIDsFromProject (oldID, newID);
-                    p->setName (name);
-                    p->save();
-                }
+                    const juce::ScopedLock sl (lock);
 
-                auto newFileName = p->getProjectFile();
-                p = nullptr;
+                    // Always open as file-based first for ID remapping
+                    auto p = createNewProject (f);
 
-                proj = addProjectToList (newFileName, true, folder);
-
-                if (proj != nullptr)
-                {
-                    engine.getUIBehaviour().selectProjectInFocusedWindow (proj);
-                    int editNum = 1;
-
-                    for (int i = 0; i < proj->getNumProjectItems(); ++i)
+                    if (projectType == ProjectType::folderBased)
                     {
-                        auto mo = proj->getProjectItemAt (i);
+                        proj = convertToFolderBasedProject (*p);
+                        p = nullptr;
 
-                        if (mo->isEdit())
-                            mo->setName (name + " " + TRANS("Edit") + " " + juce::String (editNum++),
-                                         ProjectItem::SetNameMode::forceRename);
+                        if (proj != nullptr)
+                            addProjectToList (proj->getDefaultDirectory(), true, folder);
+
+                        f.deleteFile();
+                    }
+                    else
+                    {
+                        auto oldID = p->getProjectID();
+                        auto newID = FileBasedProject::generateNewProjectId (p->projectManager);
+
+                        {
+                            // If this is an old style project, we need to make it available to the ProjectManager
+                            // as some internal plugins use that to resolve file paths
+                            p->redirectIDsFromProject (oldID, newID);
+                            p->setNewProjectId (newID);
+
+                            p->setName (name);
+                            p->save();
+                        }
+
+                        auto newFileName = p->getProjectFile();
+                        p = nullptr;
+                        proj = addProjectToList (newFileName, true, folder);
                     }
 
-                    proj->createDefaultFolders();
-                    proj->refreshFolderStructure();
-                    saveList();
-
-                   #if JUCE_DEBUG
-                    for (int i = 0; i < proj->getNumProjectItems(); ++i)
-                        jassert (proj->getProjectItemAt (i));
-                   #endif
+                    break;
                 }
-
-                break;
             }
+        }
+
+        if (proj != nullptr)
+        {
+            engine.getUIBehaviour().selectProjectInFocusedWindow (proj);
+            int editNum = 1;
+
+            for (int i = 0; i < proj->getNumProjectItems(); ++i)
+            {
+                auto mo = proj->getProjectItemAt (i);
+
+                if (mo->isEdit())
+                {
+                    mo->setName (name + " " + TRANS("Edit") + " " + juce::String (editNum++),
+                                 ProjectItem::SetNameMode::forceRenameSynchronous);
+                    markTemplateEditAsNew (mo->getSourceFile());
+                }
+            }
+
+            proj->createDefaultFolders();
+            proj->refreshFolderStructure();
+            saveList();
+
+           #if JUCE_DEBUG
+            for (int i = 0; i < proj->getNumProjectItems(); ++i)
+                jassert (proj->getProjectItemAt (i));
+           #endif
         }
     }
 
@@ -544,48 +677,103 @@ Project::Ptr ProjectManager::createNewProjectFromTemplate (const juce::String& n
     return proj;
 }
 
-Project::Ptr ProjectManager::createNewProjectInteractively (const juce::String& name,
-                                                            const juce::File& lastPath,
-                                                            juce::ValueTree folderToAddTo)
+void ProjectManager::createNewProjectInteractively (const juce::String& name,
+                                                     const juce::File& lastPath,
+                                                     juce::ValueTree folderToAddTo,
+                                                     ProjectType projectType,
+                                                     std::function<void (Project::Ptr)> callback)
 {
-    if (name.isNotEmpty())
+    if (name.isEmpty())
     {
-        auto& ui = engine.getUIBehaviour();
-        auto fileName = juce::File::createLegalFileName (name);
+        if (callback)
+            callback ({});
 
-        auto projectFile = lastPath.getChildFile (fileName)
-                                   .getChildFile (fileName + projectFileSuffix);
+        return;
+    }
 
-        if (projectFile.exists())
+    auto& ui = engine.getUIBehaviour();
+    auto fileName = juce::File::createLegalFileName (name);
+
+    if (projectType == ProjectType::folderBased)
+    {
+        auto projectFolder = lastPath.getChildFile (fileName);
+
+        if (projectFolder.isDirectory())
         {
-            if (! ui.showOkCancelAlertBox (TRANS("Create project"),
-                                           TRANS("This file already exists - do you want to open it?"),
-                                           TRANS("Open")))
-                return {};
+            ui.showOkCancelAlertBoxAsync (TRANS("Create project"),
+                                          TRANS("This folder already exists - do you want to open it?"),
+                                          TRANS("Open"),
+                                          TRANS("Cancel"),
+                                          [this, projectFolder, folderToAddTo, projectType, callback] (bool okPressed)
+                                          {
+                                              if (callback)
+                                                  callback (okPressed ? createNewProject (projectFolder, folderToAddTo, projectType) : Project::Ptr {});
+                                          });
+            return;
         }
-        else
+
+        if (! projectFolder.createDirectory().wasOk())
         {
-            auto parentDir = projectFile.getParentDirectory();
+            ui.showWarningAlert (TRANS("Create project"),
+                                 TRANS("Couldn't create the project folder")
+                                   + ":\n\n" + projectFolder.getFullPathName());
 
-            if (! parentDir.exists())
-                parentDir.createDirectory();
+            if (callback)
+                callback ({});
 
-            if (parentDir.getNumberOfChildFiles (juce::File::findFiles)
-                 + parentDir.getNumberOfChildFiles (juce::File::findDirectories) > 0)
+            return;
+        }
+
+        if (callback)
+            callback (createNewProject (projectFolder, folderToAddTo, projectType));
+
+        return;
+    }
+
+    auto projectFile = lastPath.getChildFile (fileName)
+                               .getChildFile (fileName + projectFileSuffix);
+
+    if (projectFile.exists())
+    {
+        ui.showOkCancelAlertBoxAsync (TRANS("Create project"),
+                                      TRANS("This file already exists - do you want to open it?"),
+                                      TRANS("Open"),
+                                      TRANS("Cancel"),
+                                      [this, projectFile, folderToAddTo, projectType, callback] (bool okPressed)
+                                      {
+                                          if (callback)
+                                              callback (okPressed ? createNewProject (projectFile, folderToAddTo, projectType) : Project::Ptr {});
+                                      });
+        return;
+    }
+
+    auto parentDir = projectFile.getParentDirectory();
+
+    if (! parentDir.exists())
+        parentDir.createDirectory();
+
+    if (parentDir.getNumberOfChildFiles (juce::File::findFiles)
+         + parentDir.getNumberOfChildFiles (juce::File::findDirectories) > 0)
+    {
+        ui.showYesNoCancelAlertBoxAsync (
+            TRANS("Create project"),
+            TRANS("The directory in which you're trying to create this project is not empty.")
+                   + "\n\n"
+                   + TRANS("It's sensible to keep each project in its own directory, so "
+                           "would you like to create a new subdirectory for it called \"XZZX\"?")
+                        .replace ("XZZX", projectFile.getFileNameWithoutExtension()),
+            TRANS("Create a new subdirectory"),
+            TRANS("Use this directory anyway"),
+            TRANS("Cancel"),
+            [this, projectFile, parentDir, folderToAddTo, projectType, callback] (int r) mutable
             {
-                auto r = ui.showYesNoCancelAlertBox (
-                                TRANS("Create project"),
-                                TRANS("The directory in which you're trying to create this project is not empty.")
-                                       + "\n\n"
-                                       + TRANS("It's sensible to keep each project in its own directory, so "
-                                               "would you like to create a new subdirectory for it called \"XZZX\"?")
-                                            .replace ("XZZX", projectFile.getFileNameWithoutExtension()),
-                                TRANS("Create a new subdirectory"),
-                                TRANS("Use this directory anyway"),
-                                TRANS("Cancel"));
-
                 if (r == 0)
-                    return {};
+                {
+                    if (callback)
+                        callback ({});
+
+                    return;
+                }
 
                 if (r == 1)
                 {
@@ -595,125 +783,152 @@ Project::Ptr ProjectManager::createNewProjectInteractively (const juce::String& 
                          && newDir.getNumberOfChildFiles (juce::File::findDirectories)
                               + newDir.getNumberOfChildFiles (juce::File::findFiles) > 0)
                     {
-                        ui.showWarningAlert (TRANS("Create project"),
-                                             TRANS("The directory already existed and wasn't empty, so the project couldn't be created."));
+                        engine.getUIBehaviour().showWarningAlert (TRANS("Create project"),
+                                                                  TRANS("The directory already existed and wasn't empty, so the project couldn't be created."));
+                        if (callback)
+                            callback ({});
 
-                        return {};
+                        return;
                     }
 
                     if (! newDir.createDirectory())
                     {
-                        ui.showWarningAlert (TRANS("Create project"),
-                                             TRANS("Couldn't create the new directory")
-                                               + ":\n\n" + newDir.getFullPathName());
+                        engine.getUIBehaviour().showWarningAlert (TRANS("Create project"),
+                                                                  TRANS("Couldn't create the new directory")
+                                                                    + ":\n\n" + newDir.getFullPathName());
+                        if (callback)
+                            callback ({});
 
-                        return {};
+                        return;
                     }
 
                     projectFile = newDir.getChildFile (projectFile.getFileName());
                 }
-            }
 
-            if (! projectFile.create())
-            {
-                ui.showWarningAlert (TRANS("Create project"),
-                                     TRANS("Couldn't write to the file")
-                                       + ":\n\n" + projectFile.getFullPathName());
-                return {};
-            }
-        }
+                if (! projectFile.create())
+                {
+                    engine.getUIBehaviour().showWarningAlert (TRANS("Create project"),
+                                                              TRANS("Couldn't write to the file")
+                                                                + ":\n\n" + projectFile.getFullPathName());
+                    if (callback)
+                        callback ({});
 
-        return createNewProject (projectFile, folderToAddTo);
-    }
+                    return;
+                }
 
-    return {};
-}
+                if (callback)
+                    callback (createNewProject (projectFile, folderToAddTo, projectType));
+            });
 
-void ProjectManager::unpackArchiveAndAddToList (const juce::File& archiveFile, juce::ValueTree folder)
-{
-    TracktionArchiveFile archive (engine, archiveFile);
-
-    if (! archive.isValidArchive())
-    {
-        engine.getUIBehaviour().showWarningMessage (TRANS("This file wasn't a valid tracktion archive file"));
         return;
     }
 
-    auto text = TRANS("Choose a directory into which the archive \"XZZX\" should be unpacked")
-                  .replace ("XZZX", archiveFile.getFileName()) + "...";
-
-    auto lastPath = engine.getPropertyStorage().getDefaultLoadSaveDirectory ("projectfile");
-
-    if (lastPath.existsAsFile())
-        lastPath = lastPath.getParentDirectory();
-
-    if (! lastPath.isDirectory())
-        lastPath = archiveFile;
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    juce::FileChooser chooser (text, lastPath, "*");
-
-    if (chooser.browseForDirectory())
-   #endif
+    if (! projectFile.create())
     {
-       #if JUCE_MODAL_LOOPS_PERMITTED
-        auto destDir = chooser.getResult();
-       #else
-        auto destDir = lastPath;
-       #endif
+        ui.showWarningAlert (TRANS("Create project"),
+                             TRANS("Couldn't write to the file")
+                               + ":\n\n" + projectFile.getFullPathName());
+        if (callback)
+            callback ({});
 
-        if (! destDir.createDirectory())
+        return;
+    }
+
+    if (callback)
+        callback (createNewProject (projectFile, folderToAddTo, projectType));
+}
+
+void ProjectManager::unpackArchiveAndAddToList (const juce::File& archiveFile, const juce::File& destDir, juce::ValueTree folder)
+{
+    if (! destDir.createDirectory())
+    {
+        engine.getUIBehaviour().showWarningMessage (TRANS("Couldn't create this target directory"));
+        return;
+    }
+
+    auto extractDir = destDir.getNonexistentChildFile (archiveFile.getFileNameWithoutExtension(), {}, false);
+
+    if (! extractDir.createDirectory())
+    {
+        engine.getUIBehaviour().showWarningMessage (TRANS("Couldn't create this target directory"));
+        return;
+    }
+
+    juce::Array<juce::File> newFiles;
+
+    if (isLegacyArchive (engine, archiveFile))
+    {
+        legacy::TracktionArchiveFile archive (engine, archiveFile);
+
+        bool wasAborted = false;
+
+        if (! archive.extractAllAsTask (extractDir, false, newFiles, wasAborted))
         {
-            engine.getUIBehaviour().showWarningMessage (TRANS("Couldn't create this target directory"));
+            engine.getUIBehaviour().showWarningMessage (TRANS("This file wasn't a valid tracktion archive file"));
             return;
         }
 
-        destDir = destDir.getNonexistentChildFile (archiveFile.getFileNameWithoutExtension(), {}, false);
-
-        if (! destDir.createDirectory())
-        {
-            engine.getUIBehaviour().showWarningMessage (TRANS("Couldn't create this target directory"));
+        if (wasAborted)
             return;
-        }
 
-        bool wasAborted;
-        juce::Array<juce::File> newFiles;
+        for (int i = newFiles.size(); --i >= 0;)
+            if (! isTracktionProjectFile (newFiles.getReference (i)))
+                newFiles.remove (i);
 
-        if (archive.extractAllAsTask (destDir, false, newFiles, wasAborted))
+        if (newFiles.isEmpty())
         {
-            if (! wasAborted)
-            {
-                for (int i = newFiles.size(); --i >= 0;)
-                    if (! isTracktionProjectFile (newFiles.getReference (i)))
-                        newFiles.remove (i);
-
-                if (newFiles.isEmpty())
-                {
-                    engine.getUIBehaviour().showWarningMessage (TRANS("This archive unpacked ok, but it didn't contain any project files!"));
-                }
-                else
-                {
-                    for (int i = newFiles.size(); --i >= 0;)
-                        if (auto newProj = addProjectToList (newFiles.getReference (i), true, folder))
-                            engine.getUIBehaviour().selectProjectInFocusedWindow (newProj);
-                }
-
-                for (auto& f : newFiles)
-                {
-                    if (auto proj = getProject (f))
-                    {
-                        proj->createDefaultFolders();
-                        proj->refreshFolderStructure();
-                    }
-                }
-
-                saveList();
-            }
-        }
-        else
-        {
-            engine.getUIBehaviour().showWarningMessage (TRANS("Errors occurred whilst trying to unpack this archive"));
+            engine.getUIBehaviour().showWarningMessage (TRANS("This archive unpacked ok, but it didn't contain any project files!"));
+            return;
         }
     }
+    else
+    {
+        juce::ZipFile zip (archiveFile);
+
+        if (zip.getNumEntries() == 0 || ! zip.uncompressTo (extractDir, true).wasOk())
+        {
+            engine.getUIBehaviour().showWarningMessage (TRANS("This file wasn't a valid tracktion archive file"));
+            return;
+        }
+
+        // Folder-based project: the extracted directory itself is the project
+        if (isTracktionProjectFolder (extractDir))
+        {
+            if (auto newProj = addProjectToList (extractDir, true, folder))
+                engine.getUIBehaviour().selectProjectInFocusedWindow (newProj);
+
+            saveList();
+            return;
+        }
+
+        // File-based project: collect .tracktion files from the extraction
+        extractDir.findChildFiles (newFiles, juce::File::findFiles, true);
+
+        for (int i = newFiles.size(); --i >= 0;)
+            if (! isTracktionProjectFile (newFiles.getReference (i)))
+                newFiles.remove (i);
+
+        if (newFiles.isEmpty())
+        {
+            engine.getUIBehaviour().showWarningMessage (TRANS("This archive unpacked ok, but it didn't contain any project files!"));
+            return;
+        }
+    }
+
+    for (int i = newFiles.size(); --i >= 0;)
+        if (auto newProj = addProjectToList (newFiles.getReference (i), true, folder))
+            engine.getUIBehaviour().selectProjectInFocusedWindow (newProj);
+
+    for (auto& f : newFiles)
+    {
+        if (auto proj = getProject (f))
+        {
+            proj->createDefaultFolders();
+            proj->refreshFolderStructure();
+        }
+    }
+
+    saveList();
 }
 
 juce::StringArray ProjectManager::getRecentProjects (bool printableFormat)
@@ -782,4 +997,4 @@ void ProjectManager::deleteProjectFolder (juce::ValueTree folder)
     folder.getParent().removeChild (folder, nullptr);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

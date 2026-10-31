@@ -11,8 +11,7 @@
 #include "tracktion_MidiNodeHelpers.h"
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 using EditBeatPosition = double;
@@ -364,6 +363,13 @@ namespace MidiHelpers
         return dest;
     }
 
+    /** choc's Message::isNoteOn/isNoteOff read the velocity byte, which asserts for
+        messages shorter than 3 bytes (e.g. program change, channel pressure), so the
+        length has to be checked before them.
+    */
+    inline bool isNoteOn (const choc::midi::LongMessage& m)                 { return m.size() == 3 && m.isNoteOn(); }
+    inline bool isNoteOff (const choc::midi::LongMessage& m)                { return m.size() == 3 && m.isNoteOff(); }
+
     inline void createNoteOffMap (std::vector<std::pair<size_t, size_t>>& noteOffMap,
                                   const choc::midi::Sequence& seq)
     {
@@ -374,10 +380,7 @@ namespace MidiHelpers
         {
             const auto& m = seq.events[i].message;
 
-            if (! m.isShortMessage())
-                continue;
-
-            if (m.isNoteOn())
+            if (isNoteOn (m))
             {
                 const auto note = m.getNoteNumber();
                 const auto chan = m.getChannel0to15();
@@ -386,12 +389,9 @@ namespace MidiHelpers
                 {
                     const auto& m2 = seq.events[j].message;
 
-                    if (! m2.isShortMessage())
-                        continue;
-
-                    if (m2.getNoteNumber() == note
-                         && m2.getChannel0to15() == chan
-                         && m2.isNoteOff())
+                    if (isNoteOff (m2)
+                         && m2.getNoteNumber() == note
+                         && m2.getChannel0to15() == chan)
                     {
                         noteOffMap.emplace_back (std::make_pair (i, j));
                         break;
@@ -454,12 +454,9 @@ namespace MidiHelpers
                        {
                            --index;
 
-                           if (! e.message.isShortMessage())
-                               return;
-
                            const auto& m = e.message;
 
-                           if (m.isNoteOn())
+                           if (isNoteOn (m))
                            {
                                const auto noteOnTime = q.roundBeatToNearest (BeatPosition::fromBeats (e.timeStamp)).inBeats();
 
@@ -485,7 +482,7 @@ namespace MidiHelpers
 
                                e.timeStamp = noteOnTime;
                            }
-                           else if (m.isNoteOff() && quantiseNoteOffs)
+                           else if (quantiseNoteOffs && isNoteOff (m))
                            {
                                e.timeStamp = q.roundBeatUp (BeatPosition::fromBeats (e.timeStamp)).inBeats();
                            }
@@ -495,7 +492,7 @@ namespace MidiHelpers
     inline void applyGrooveToSequence (const GrooveTemplate& groove, float grooveStrength, choc::midi::Sequence& ms)
     {
         for (auto& e : ms)
-            if (e.message.isNoteOn() || e.message.isNoteOff())
+            if (isNoteOn (e.message) || isNoteOff (e.message))
                 e.timeStamp = groove.beatsTimeToGroovyTime (BeatPosition::fromBeats (e.timeStamp), grooveStrength).inBeats();
     }
 
@@ -537,8 +534,10 @@ namespace MidiHelpers
                 for (int i = channelNumbers.getStart(); i < channelNumbers.getEnd(); ++i)
                     chocMidiHelpers::createControllerUpdatesForTime (sourceSequence, (uint8_t) i, time, controllerMessagesScratchBuffer);
 
+                // Some of these are timestamped with their position in the sequence, so put them
+                // all at the start, in order, before the notes
                 for (auto& m : controllerMessagesScratchBuffer)
-                    destBuffer.addMidiMessage (m, midiSourceID);
+                    destBuffer.addMidiMessage (m, 0.0, midiSourceID);
             }
 
             if (! clipLevel.isMute())
@@ -550,7 +549,7 @@ namespace MidiHelpers
                     auto e = sourceSequence.events[i];
                     const auto& m = e.message;
 
-                    if (! m.isNoteOn())
+                    if (! isNoteOn (m))
                         continue;
 
                     if (auto noteOffEvent = getNoteOff (i, sourceSequence, noteOffMap))
@@ -589,7 +588,7 @@ namespace MidiHelpers
             const auto& e = sourceSequence.events[i];
             const auto& m = e.message;
 
-            if (! m.isNoteOn())
+            if (! isNoteOn (m))
                 continue;
 
             if (! channelNumbers.contains ((int) m.getChannel1to16()))
@@ -621,9 +620,8 @@ namespace MidiHelpers
 
         // First adjust all the note times
         for (auto& m : sequence)
-            if (m.message.isShortMessage())
-                if (auto& sm = m.message; sm.isNoteOn() || sm.isNoteOff())
-                   m.timeStamp = clipRange.clipValue (m.timeStamp);
+            if (isNoteOn (m.message) || isNoteOff (m.message))
+                m.timeStamp = clipRange.clipValue (m.timeStamp);
 
         // Then change the timestamps of an zero or negative length notes
         for (int i = (int) sequence.events.size(); --i >= 0;)
@@ -632,7 +630,7 @@ namespace MidiHelpers
             const auto& e = sequence.events[index];
             const auto& m = e.message;
 
-            if (! m.isNoteOn())
+            if (! isNoteOn (m))
                 continue;
 
             if (auto noteOffIndex = getNoteOffIndex (index, noteOffMap))
@@ -854,7 +852,7 @@ public:
                                 juce::Array<juce::MidiMessage>& controllerMessagesScratchBuffer) override
     {
         generator.createMessagesForTime (destBuffer,
-                                         editBeatPosition,
+                                         editBeatPosition + cachedSequenceOffset,
                                          noteList,
                                          channelNumbers,
                                          clipLevel,
@@ -865,14 +863,16 @@ public:
     ActiveNoteList getNotesOnAtTime (EditBeatPosition time, juce::Range<int> channelNumbers, LiveClipLevel& clipLevel) override
     {
         return MidiHelpers::getNotesOnAtTime (currentSequence, noteOffMap,
-                                              time,
+                                              time + cachedSequenceOffset,
                                               channelNumbers,
                                               clipLevel);
     }
 
+    // The cached sequence's times have the offset added, which getEvent() removes,
+    // so it's added to the times passed in to look them up in the cached sequence
     void setTime (EditBeatPosition editBeatPosition) override
     {
-        generator.setTime (editBeatPosition);
+        generator.setTime (editBeatPosition + cachedSequenceOffset);
     }
 
     void cacheSequence (double offsetBeats, std::optional<juce::Range<double>> clipRange) override
@@ -1006,6 +1006,14 @@ public:
 
             setLoopIndex (static_cast<int> (clipPos / loopTimes.getLength()));
             generator->setTime (sequencePos);
+
+            // Past the loop's last event, so carry on from the next loop, as advance() does.
+            // Otherwise this is exhausted and nothing advances it to the next loop
+            if (generator->exhausted())
+            {
+                setLoopIndex (loopIndex + 1);
+                generator->setTime (0.0);
+            }
         }
     }
 
@@ -1237,6 +1245,14 @@ public:
             return;
         }
 
+        // An event is played in the section whose samples it rounds to: one less than half a
+        // sample before the end is left to the next section, which plays it at its start.
+        // Section boundaries are often musical positions, e.g. a launch, a stop or a loop
+        // start, so events on them come out either side by rounding errors in their beats
+        const auto halfSample = numSamples > 0 ? beatDurationOfOneSample / 2.0 : 0.0;
+        const auto sectionStart = clipIntersection.getStart().inBeats() - halfSample;
+        const auto sectionEnd = clipIntersection.getEnd().inBeats() - halfSample;
+
         // This turns notes off that are no longer playing due to a change in the sequence
         // It is only called when the sequence changes
         if (shouldSendNoteOffsForNotesNoLongerPlaying)
@@ -1272,14 +1288,25 @@ public:
 
         if (shouldCreateMessagesForTime)
         {
-            generator->createMessagesForTime (destBuffer, clipIntersection.getStart().inBeats(),
-                                              *activeNoteList,
-                                              channelNumbers, clipLevel, useMPEChannelMode, midiSourceID,
-                                              controllerMessagesScratchBuffer);
+            // Notes on at the start are struck just after it, so if the clip ends before then, e.g. a loop
+            // has wrapped to just before its end, they're not, as they'd be stopped before they're struck
+            const auto oneSampleSeconds = numSamples > 0 ? sectionEditTimeRange.getLength().inSeconds() / numSamples : 0.0;
+            const auto secondsUntilClipEnd = ((editRange.getEnd() + *dynamicOffsetBeats) - sectionEditBeatRange.getStart()).inBeats() * secondsPerBeat.inSeconds();
+
+            if (! (isLastBlockOfClip && secondsUntilClipEnd <= 0.0001 + oneSampleSeconds))
+            {
+                const auto numEventsBefore = destBuffer.size();
+                generator->createMessagesForTime (destBuffer, sectionStart,
+                                                  *activeNoteList,
+                                                  channelNumbers, clipLevel, useMPEChannelMode, midiSourceID,
+                                                  controllerMessagesScratchBuffer);
+                MidiNodeHelpers::clampTimeStamps (destBuffer, numEventsBefore, timePositionOfLastSample);
+            }
+
             shouldCreateMessagesForTime = false;
 
             // Ensure generator is initialised
-            generator->setTime (clipIntersection.getStart().inBeats());
+            generator->setTime (sectionStart);
         }
 
         // Iterate notes in blocks
@@ -1292,14 +1319,18 @@ public:
                 auto e = generator->getEvent();
                 const EditBeatPosition editBeatPosition = e.getTimeStamp();
 
-                // Ensure we stop at the clip end
-                if (editBeatPosition >= clipIntersection.getEnd().inBeats())
+                // Ensure we stop at the clip end. Note-offs up to it are played in this section,
+                // nudged back below, so they're not lost (which leads to stuck notes)
+                if (editBeatPosition >= clipIntersection.getEnd().inBeats()
+                    || (editBeatPosition >= sectionEnd && ! e.isNoteOff()))
                     break;
 
                 BlockBeatPosition blockBeatPosition = editBeatPosition - sectionEditBeatRange.getStart().inBeats();
 
-                // This time correction is due to rounding errors accumulating and casuing events to be slightly negative in a block
-                if (blockBeatPosition < -0.000001)
+                // Skip events played by the previous section, and note-offs for notes that aren't on,
+                // e.g. the end of the previous loop when this section starts on a loop's start
+                if (editBeatPosition < sectionStart
+                    || (e.isNoteOff() && ! activeNoteList->isNoteActive (e.getChannel(), e.getNoteNumber())))
                 {
                     generator->advance();
                     continue;
@@ -1313,6 +1344,15 @@ public:
 
                 e.multiplyVelocity (volScale);
                 const auto eventTimeSeconds = blockBeatPosition * secondsPerBeat.inSeconds();
+
+                // A note starting on the last sample before the loop ends would be stopped straight away,
+                // and as that's done at the sample's start it would end up before the note-on and leave it on
+                if (lastBlockOfLoop && e.isNoteOn() && eventTimeSeconds >= timePositionOfLastSample)
+                {
+                    generator->advance();
+                    continue;
+                }
+
                 destBuffer.addMidiMessage (e, eventTimeSeconds, midiSourceID);
 
                 // Update note list
@@ -1445,7 +1485,7 @@ void LoopingMidiNode::killActiveNotes (MidiMessageArray& dest, double timestampF
                                      dest,
                                      midiSourceID,
                                      timestampForNoteOffs,
-                                     false);
+                                     getPlayHead().isPlaying());
 }
 
 //==============================================================================
@@ -1522,4 +1562,4 @@ void LoopingMidiNode::process (ProcessContext& pc)
                                           getPlayHeadState().isLastBlockOfLoop());
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

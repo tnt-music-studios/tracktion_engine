@@ -10,11 +10,12 @@
 
 #include "tracktion_PluginScanHelpers.h"
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 // Defined in ExternalPlugin.cpp to clean up plugins waiting to be deleted
 extern void cleanUpDanglingPlugins();
+extern void waitForPluginDeletion (std::function<void()> onComplete);
+extern void deleteQueuedPlugins();
 
 //==============================================================================
 inline SettingID getPluginListPropertyName()
@@ -64,6 +65,7 @@ void PluginManager::initialise()
     createBuiltInType<TextPlugin>();
     createBuiltInType<FreezePointPlugin>();
     createBuiltInType<InsertPlugin>();
+    createBuiltInType<ChannelMapperPlugin>();
 
    #if TRACKTION_ENABLE_REWIRE
     createBuiltInType<ReWirePlugin>();
@@ -358,9 +360,6 @@ Plugin::Ptr PluginManager::createNewPlugin (Edit& ed, const juce::String& type, 
             auto v = createValueTree (IDs::PLUGIN,
                                       IDs::type, type);
 
-            if (ed.engine.getPluginManager().areGUIsLockedByDefault())
-                v.setProperty (IDs::windowLocked, true, nullptr);
-
             if (auto p = builtIn->create (PluginCreationInfo (ed, v, true)))
                 return p;
         }
@@ -386,16 +385,6 @@ juce::Array<juce::PluginDescription> PluginManager::getARACompatiblePlugDescript
     }
 
     return descs;
-}
-
-bool PluginManager::areGUIsLockedByDefault()
-{
-    return engine.getPropertyStorage().getProperty (SettingID::filterGui, true);
-}
-
-void PluginManager::setGUIsLockedByDefault (bool b)
-{
-    engine.getPropertyStorage().setProperty (SettingID::filterGui, b);
 }
 
 bool PluginManager::doubleClickToOpenWindows()
@@ -651,4 +640,4 @@ void PluginCache::timerCallback()
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

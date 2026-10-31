@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 struct DelayBufferBase
 {
@@ -66,6 +65,7 @@ public:
     juce::String getSelectableDescription() override    { return TRANS("Delay Plugin"); }
 
     int getNumOutputChannelsGivenInputs (int numInputChannels) override     { return juce::jmin (numInputChannels, 2); }
+    BusLayout getBusses() const override   { return BusLayout::singleStereoInOut(); }
     void initialise (const PluginInitialisationInfo&) override;
     void deinitialise() override;
     void reset() override;
@@ -87,4 +87,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DelayPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /** Holds a clip's level state.
@@ -138,8 +137,8 @@ public:
     /** Returns an array of any ReferencedItem[s] e.g. audio files. */
     juce::Array<ReferencedItem> getReferencedItems() override;
 
-    /** Should be implemented to change the underlying source to a new ProjectItemID. */
-    void reassignReferencedItem (const ReferencedItem&, ProjectItemID /*newID*/, double /*newStartTime*/) override;
+    /** Should be implemented to change the underlying source to a new ProjectItemRef. */
+    void reassignReferencedItem (const ReferencedItem&, ProjectItemRef newRef, double newStartTime) override;
 
     //==============================================================================
     /** Some clip types can be launched, if that's possible, this returns a handle to
@@ -199,6 +198,18 @@ public:
     /** Returns the maximum length this clip can have. */
     virtual TimeDuration getMaximumLength()               { return toDuration (Edit::getMaximumEditEnd()); }
 
+    /** Clips shorter than this can't hold a single sample at any supported sample rate.
+        Floating-point rounding when trimming can leave them behind, so they're treated as
+        empty: they're removed when an Edit loads and never added to the playback graph.
+    */
+    static constexpr TimeDuration minimumLength = TimeDuration::fromSeconds (1.0e-6);
+
+    /** Returns extra time before the clip start that needs processing (e.g., ARA head time). */
+    virtual TimeDuration getHead() const                  { return {}; }
+
+    /** Returns extra time after the clip end that needs processing (e.g., ARA tail time). */
+    virtual TimeDuration getTail() const                  { return {}; }
+
     /** Returns times for snapping to, relative to the Edit. Base class adds start and end time. */
     virtual juce::Array<TimePosition> getInterestingTimes();
 
@@ -233,7 +244,10 @@ public:
     /** Returns the loop range in beats. */
     BeatRange getLoopRangeBeats() const                     { return { getLoopStartBeats(), getLoopLengthBeats() }; }
 
-    /** Sets the loop range the clip should use in seconds. */
+    /** Sets the loop range the clip should use in seconds.
+        Clips that loop in beats convert this to beats, so use setLoopRangeBeats()
+        for those when the exact loop matters.
+    */
     virtual void setLoopRange (TimeRange)                   {}
     /** Sets the loop range the clip should use in beats. */
     virtual void setLoopRangeBeats (BeatRange)              {}
@@ -515,7 +529,7 @@ namespace details
     juce::String toString (Clip::FollowActionDurationType);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {

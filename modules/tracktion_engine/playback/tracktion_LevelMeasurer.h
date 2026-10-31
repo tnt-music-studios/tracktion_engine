@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 struct DbTimePair
 {
@@ -54,6 +53,13 @@ public:
     int getNumActiveChannels() const noexcept           { return numActiveChannels; }
 
     //==============================================================================
+    /** Per-channel measurement result, used to batch updates in a single lock. */
+    struct ChannelLevel
+    {
+        DbTimePair level;
+        bool overloaded = false;
+    };
+
     struct Client
     {
         Client() = default;
@@ -65,8 +71,6 @@ public:
         DbTimePair getAndClearMidiLevel() noexcept;
         DbTimePair getAndClearAudioLevel (int chan) noexcept;
 
-        static constexpr auto maxNumChannels = 8;
-
         /** @internal */
         void setNumChannelsUsed (int) noexcept;
         void setOverload (int channel, bool hasOverloaded) noexcept;
@@ -76,9 +80,14 @@ public:
         void updateAudioLevel (int channel, DbTimePair) noexcept;
         void updateMidiLevel (DbTimePair) noexcept;
 
+        /** Updates all channel levels and numChannelsUsed under a single lock. */
+        void updateAllChannels (const ChannelLevel* levels, int numChannels) noexcept;
+
     private:
-        DbTimePair audioLevels[maxNumChannels];
-        bool overload[maxNumChannels] = {};
+        void ensureNumChannels (int needed);
+
+        std::vector<DbTimePair> audioLevels;
+        std::vector<bool> overload;
         DbTimePair midiLevels;
         std::atomic<int> numChannelsUsed { 0 };
         bool clearOverload = true;
@@ -91,18 +100,15 @@ public:
     void addClient (Client&);
     void removeClient (Client&);
 
-    void setLevelCache (float dBL, float dBR) noexcept      { levelCacheL = dBL; levelCacheR = dBR; }
-    std::pair<float, float> getLevelCache() const           { return { levelCacheL, levelCacheR }; }
-
 private:
     Mode mode = peakMode;
     std::atomic<int> numActiveChannels { 1 };
     bool showMidi = false;
-    float levelCacheL = -100.0f;
-    float levelCacheR = -100.0f;
 
     juce::Array<Client*> clients;
     RealTimeSpinLock clientsMutex;
+
+    choc::SmallVector<ChannelLevel, 32> channelLevels;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE(LevelMeasurer)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LevelMeasurer)
@@ -127,4 +133,4 @@ public:
     juce::AudioBuffer<float> sumBuffer;
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

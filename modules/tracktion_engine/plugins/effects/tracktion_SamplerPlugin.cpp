@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 // this must be high enough for low freq sounds not to click
 static constexpr int minimumSamplesToPlayWhenStopping = 8;
@@ -93,7 +92,7 @@ public:
             }
             else
             {
-                endFade = std::max (0.0f, startFade - numSamps * 0.01f);
+                endFade = std::max (0.0f, startFade - float (numSamps) * 0.01f);
             }
 
             const int numSampsNeeded = 2 + juce::roundToInt ((numSamps + 2) * playbackRatio);
@@ -161,6 +160,12 @@ void SamplerPlugin::valueTreeChanged()
 {
     triggerAsyncUpdate();
     Plugin::valueTreeChanged();
+}
+
+void SamplerPlugin::flushPendingUpdates()
+{
+    TRACKTION_ASSERT_MESSAGE_THREAD
+    handleUpdateNowIfNeeded();
 }
 
 void SamplerPlugin::handleAsyncUpdate()
@@ -560,7 +565,7 @@ juce::Array<Exportable::ReferencedItem> SamplerPlugin::getReferencedItems()
         auto v = getSound (i);
 
         Exportable::ReferencedItem ref;
-        ref.itemID = ProjectItemID::fromProperty (v, IDs::source);
+        ref.itemRef = ProjectItemID::fromProperty (v, IDs::source);
         ref.firstTimeUsed = v[IDs::startTime];
         ref.lengthUsed = v[IDs::length];
         results.add (ref);
@@ -569,17 +574,25 @@ juce::Array<Exportable::ReferencedItem> SamplerPlugin::getReferencedItems()
     return results;
 }
 
-void SamplerPlugin::reassignReferencedItem (const ReferencedItem& item, ProjectItemID newID, double newStartTime)
+void SamplerPlugin::reassignReferencedItem (const ReferencedItem& item, ProjectItemRef newRef, double newStartTime)
 {
     auto index = getReferencedItems().indexOf (item);
 
     if (index >= 0)
     {
         auto um = getUndoManager();
-
         auto v = getSound (index);
-        v.setProperty (IDs::source, newID.toString(), um);
-        v.setProperty (IDs::startTime, static_cast<double> (v[IDs::startTime]) - newStartTime, um);
+
+        if (newRef.isProjectItemID())
+        {
+            v.setProperty (IDs::source, newRef.toString(), um);
+            v.setProperty (IDs::startTime, static_cast<double> (v[IDs::startTime]) - newStartTime, um);
+        }
+        else
+        {
+            auto newFile = newRef.resolve (edit.engine);
+            v.setProperty (IDs::source, newFile.getFullPathName(), um);
+        }
     }
     else
     {
@@ -659,8 +672,8 @@ void SamplerPlugin::SamplerSound::setExcerpt (double startTime_, double length_)
             audioData.setSize (audioFile.getNumChannels(), fileLengthSamples + 32);
             audioData.clear();
 
-            auto audioDataChannelSet = juce::AudioChannelSet::canonicalChannelSet (audioFile.getNumChannels());
-            auto channelsToUse = juce::AudioChannelSet::stereo();
+            auto audioDataChannels = ChannelConfiguration::canonical (audioFile.getNumChannels());
+            auto channelsToUse = ChannelConfiguration::stereo();
 
             int total = fileLengthSamples;
             int offset = 0;
@@ -670,7 +683,7 @@ void SamplerPlugin::SamplerSound::setExcerpt (double startTime_, double length_)
                 const int numThisTime = std::min (8192, total);
                 reader->setReadPosition (fileStartSample + offset);
 
-                if (! reader->readSamples (numThisTime, audioData, audioDataChannelSet, offset, channelsToUse, 2000))
+                if (! reader->readSamples (numThisTime, audioData, audioDataChannels, offset, channelsToUse, 2000))
                 {
                     jassertfalse;
                     break;
@@ -710,4 +723,4 @@ void SamplerPlugin::SamplerSound::refreshFile()
     setExcerpt (startTime, length);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

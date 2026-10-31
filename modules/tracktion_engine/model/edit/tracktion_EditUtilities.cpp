@@ -8,8 +8,54 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine {
+
+namespace
 {
+    struct EditSpaceTargets
+    {
+        std::vector<ClipTrack*> clipTracks;
+        std::vector<AutomatableEditItem*> automatableItems;
+
+        EditSpaceTargets (Edit& edit, const juce::Array<Track*>& onlyTheseTracks)
+        {
+            const bool allTracks = onlyTheseTracks.isEmpty();
+
+            if (allTracks)
+            {
+                for (auto ct : getTracksOfType<ClipTrack> (edit, true))
+                    clipTracks.push_back (ct);
+
+                automatableItems = getAllAutomatableEditItems (edit);
+            }
+            else
+            {
+                for (auto t : onlyTheseTracks)
+                {
+                    if (t == nullptr)
+                        continue;
+
+                    if (auto ct = dynamic_cast<ClipTrack*> (t))
+                        clipTracks.push_back (ct);
+
+                    for (auto sub : t->getAllSubTracks (true))
+                        if (auto ct = dynamic_cast<ClipTrack*> (sub))
+                            clipTracks.push_back (ct);
+
+                    auto trackItems = t->getAllAutomatableEditItems();
+                    automatableItems.insert (automatableItems.end(), trackItems.begin(), trackItems.end());
+                }
+            }
+
+            // Deduplicate
+            std::sort (clipTracks.begin(), clipTracks.end());
+            clipTracks.erase (std::unique (clipTracks.begin(), clipTracks.end()), clipTracks.end());
+
+            std::sort (automatableItems.begin(), automatableItems.end());
+            automatableItems.erase (std::unique (automatableItems.begin(), automatableItems.end()), automatableItems.end());
+        }
+    };
+}
 
 Project::Ptr getProjectForEdit (const Edit& e)
 {
@@ -29,35 +75,63 @@ juce::File getEditFileFromProjectManager (Edit& edit)
     return {};
 }
 
-bool referencesProjectItem (Edit& edit, ProjectItemID itemID)
+bool referencesProjectItem (Edit& edit, ProjectItemRef itemRef)
 {
+    // Fast path: identical raw value (covers ProjectItemID matches and byte-identical paths).
     for (auto e : Exportable::addAllExportables (edit))
         for (auto& i : e->getReferencedItems())
-            if (i.itemID == itemID)
+            if (i.itemRef == itemRef)
+                return true;
+
+    // Slow path: resolve both sides to an absolute file and compare.
+    // Needed for folder-based projects where the project ref is relative to the
+    // project folder, but clip refs are stored relative to the edit folder.
+    auto& engine = edit.engine;
+    const auto targetFile = itemRef.resolve (engine);
+
+    if (targetFile == juce::File())
+        return false;
+
+    const auto editFolder = getEditFileFromProjectManager (edit).getParentDirectory();
+
+    for (auto e : Exportable::addAllExportables (edit))
+        for (auto& i : e->getReferencedItems())
+            if (i.itemRef.resolve (engine, editFolder) == targetFile)
                 return true;
 
     return false;
 }
 
+
 //==============================================================================
 //==============================================================================
-void insertSpaceIntoEdit (Edit& edit, TimeRange timeRange)
+void insertSpaceIntoEdit (Edit& edit, TimeRange timeRange, const juce::Array<Track*>& onlyTheseTracks)
 {
+    const bool allTracks = onlyTheseTracks.isEmpty();
     const bool doTempoTrackFirst = ! edit.getTimecodeFormat().isBarsBeats();
     const auto time = timeRange.getStart();
     const auto length = timeRange.getLength();
 
-    if (doTempoTrackFirst)
-        edit.getTempoTrack()->insertSpaceIntoTrack (time, length);
+    EditSpaceTargets targets (edit, onlyTheseTracks);
 
-    for (auto ct : getTracksOfType<ClipTrack> (edit, true))
+    if (allTracks && doTempoTrackFirst)
     {
-        ct->splitAt (time);
-        ct->insertSpaceIntoTrack (time, length);
+        edit.pitchSequence.insertSpaceIntoSequence (time, length, false);
+        edit.tempoSequence.insertSpaceIntoSequence (time, length, false);
     }
 
-    if (! doTempoTrackFirst)
-        edit.getTempoTrack()->insertSpaceIntoTrack (time, length);
+    for (auto ct : targets.clipTracks)
+        ct->insertSpace (time, length);
+
+    for (auto item : targets.automatableItems)
+        for (auto param : item->getAutomatableParameters())
+            param->getCurve().insertSpace (*param, time, length);
+
+    if (allTracks && ! doTempoTrackFirst)
+    {
+        edit.pitchSequence.insertSpaceIntoSequence (time, length, false);
+        edit.tempoSequence.insertSpaceIntoSequence (time, length, false);
+    }
 }
 
 void insertSpaceIntoEditFromBeatRange (Edit& edit, BeatRange beatRange)
@@ -184,7 +258,7 @@ juce::BigInteger toBitSet (const juce::Array<Track*>& tracks)
     {
         auto allTracks = getAllTracks (first->edit);
 
-        for (auto t : allTracks)
+        for (auto t : tracks)
             if (int index = allTracks.indexOf (t); index >= 0)
                 bitset.setBit (index);
     }
@@ -232,7 +306,8 @@ ClipTrack* findFirstClipTrackFromSelection (const SelectableList& items)
 
     if (clipTracks.isEmpty())
         for (auto& clip : items.getItemsOfType<Clip>())
-            clipTracks.add (clip->getClipTrack());
+            if (auto ct = clip->getClipTrack())
+                clipTracks.add (ct);
 
     ClipTrack* firstTrack = nullptr;
     auto firstIndex = std::numeric_limits<int>::max();
@@ -255,16 +330,18 @@ Clip::Ptr duplicateClip (const Clip& c)
 {
     auto n = c.state.createCopy();
     EditItemID::remapIDs (n, nullptr, c.edit);
-    auto newClipID = EditItemID::fromID (n);
+    [[ maybe_unused ]] auto newClipID = EditItemID::fromID (n);
     jassert (newClipID != EditItemID::fromID (c.state));
     jassert (c.edit.clipCache.findItem (newClipID) == nullptr);
 
     if (auto t = c.getClipTrack())
     {
         jassert (! t->state.getChildWithProperty (IDs::id, newClipID).isValid());
-        t->state.appendChild (n, c.getUndoManager());
 
-        if (auto newClip = t->findClipForID (newClipID))
+        // The copy is of an existing clip, so it keeps that clip's settings.
+        // NB: this always targets the clip's track, even for a launcher clip,
+        // since Clip::getClipTrack resolves to the slot's host track.
+        if (auto newClip = insertClipCopy (*t, ClipCopy::fromClipboardState (n, false)))
             return newClip;
     }
     else
@@ -294,8 +371,7 @@ void deleteRegionOfClip (Clip& c, TimeRange timeRangeToDelete)
 
     if (auto track = c.getClipTrack())
     {
-        track->setFrozen (false, Track::groupFreeze);
-        track->setFrozen (false, Track::individualFreeze);
+        track->unfreeze (Track::anyFreeze);
 
         const auto clipTimeRange = c.getEditTimeRange();
 
@@ -314,6 +390,10 @@ void deleteRegionOfClip (Clip& c, TimeRange timeRangeToDelete)
         else
         {
             c.trimAwayOverlap (timeRangeToDelete);
+
+            // A range ending a rounding error inside the clip would otherwise leave a sliver of it behind
+            if (c.getPosition().getLength() < Clip::minimumLength)
+                c.removeFromParent();
         }
     }
 }
@@ -419,70 +499,43 @@ void deleteRegionOfTracks (Edit& edit, TimeRange rangeToDelete, bool onlySelecte
         selectionManager->deselectAll();
     }
 
-    Plugin::Array pluginsInRacks;
+    EditSpaceTargets targets (edit, onlySelected ? tracks : juce::Array<Track*>{});
 
-    auto addPluginsInRack = [&] (RackInstance& r)
+    for (auto ct : targets.clipTracks)
     {
-        if (r.type != nullptr)
-            for (auto p : r.type->getPlugins())
-                pluginsInRacks.addIfNotAlreadyThere (p);
-    };
+        ct->deleteRegion (rangeToDelete, selectionManager);
 
-    auto removeAutomationRangeOfPlugin = [&] (Plugin& p)
-    {
-        for (auto param : p.getAutomatableParameters())
-            param->getCurve().removeRegionAndCloseGap (*param, rangeToDelete, &edit.getUndoManager());
-    };
+        // Remove any tiny clips that might be left over
+        juce::Array<Clip*> clipsToRemove;
 
-    auto removeAutomationRangeFindingRackPlugins = [&] (Track& t)
-    {
-        for (auto p : t.pluginList)
+        for (auto& c : ct->getClips())
+            if (c->getPosition().getLength() < TimeDuration::fromSeconds (0.0001))
+                clipsToRemove.add (c);
+
+        for (auto c : clipsToRemove)
+            c->removeFromParent();
+
+        if (closeGap == CloseGap::yes)
         {
-            removeAutomationRangeOfPlugin (*p);
-
-            // find all the plugins in racks
-            if (auto rf = dynamic_cast<RackInstance*> (p))
-                addPluginsInRack (*rf);
-        }
-    };
-
-    for (int i = tracks.size(); --i >= 0;)
-    {
-        if (auto t = dynamic_cast<ClipTrack*> (tracks[i]))
-        {
-            t->deleteRegion (rangeToDelete, selectionManager);
-
-            // Remove any tiny clips that might be left over
-            juce::Array<Clip*> clipsToRemove;
-
-            for (auto& c : t->getClips())
-                if (c->getPosition().getLength() < TimeDuration::fromSeconds (0.0001))
-                    clipsToRemove.add (c);
-
-            for (auto c : clipsToRemove)
-                c->removeFromParent();
-
-            if (closeGap == CloseGap::yes)
-            {
-                for (auto& c : t->getClips())
-                    if (c->getPosition().getStart() > rangeToDelete.getCentre())
-                        c->setStart (c->getPosition().getStart() - rangeToDelete.getLength(), false, true);
-
-                removeAutomationRangeFindingRackPlugins (*t);
-            }
-        }
-        else if (auto ft = dynamic_cast<FolderTrack*> (tracks[i]))
-        {
-            removeAutomationRangeFindingRackPlugins (*ft);
+            for (auto& c : ct->getClips())
+                if (c->getPosition().getStart() > rangeToDelete.getCentre())
+                    c->setStart (c->getPosition().getStart() - rangeToDelete.getLength(), false, true);
         }
     }
 
-    for (auto p : pluginsInRacks)
-        removeAutomationRangeOfPlugin (*p);
+    if (closeGap == CloseGap::yes)
+    {
+        for (auto item : targets.automatableItems)
+            for (auto param : item->getAutomatableParameters())
+                param->getCurve().removeRegionAndCloseGap (*param, rangeToDelete, &edit.getUndoManager());
+    }
 
-    // N.B. Delete tempo last
+    // N.B. Delete tempo/pitch last
     if (! onlySelected || tracks.contains (edit.getTempoTrack()))
+    {
+        edit.pitchSequence.deleteRegion (rangeToDelete);
         edit.tempoSequence.deleteRegion (rangeToDelete);
+    }
 }
 
 void moveSelectedClips (const SelectableList& selectedObjectsIn, Edit& edit, MoveClipAction mode, bool automationLocked)
@@ -636,6 +689,26 @@ juce::Array<ClipEffect*> getAllClipEffects (Edit& edit)
                         res.add (effect);
 
     return res;
+}
+
+void removeAllContentClips (Edit& edit)
+{
+    for (auto t : getClipTracks (edit))
+    {
+        for (int i = t->getClips().size(); --i >= 0;)
+        {
+            auto clip = t->getClips().getUnchecked (i);
+
+            if (clip->type != TrackItem::Type::video
+                  && clip->type != TrackItem::Type::marker)
+                clip->removeFromParent();
+        }
+    }
+
+    for (auto t : getAudioTracks (edit))
+        for (auto s : t->getClipSlotList().getClipSlots())
+            if (auto c = s->getClip())
+                c->removeFromParent();
 }
 
 
@@ -826,6 +899,11 @@ MidiNote* findNoteForState (const Edit& edit, const juce::ValueTree& v)
 
 juce::Result mergeMidiClips (juce::Array<MidiClip*> clips, SelectionManager* sm)
 {
+    // The merged clip goes on the arranger, so a launcher clip would be lost from its slot
+    for (auto c : clips)
+        if (c->getClipSlot() != nullptr)
+            return juce::Result::fail (TRANS("Unable to merge launcher clips"));
+
     for (auto c : clips)
         if (c->getClipTrack() == nullptr || c->getClipTrack()->isFrozen (Track::anyFreeze))
             return juce::Result::fail (TRANS("Unable to merge clips on frozen tracks"));
@@ -1043,51 +1121,57 @@ void midiPanic (Edit& edit, bool resetPlugins)
 }
 
 //==============================================================================
-juce::Array<AutomatableEditItem*> getAllAutomatableEditItems (const Edit& edit)
+std::vector<AutomatableEditItem*> getAllAutomatableEditItems (const Edit& edit)
 {
     CRASH_TRACER
-    juce::Array<AutomatableEditItem*> destArray;
+    std::vector<AutomatableEditItem*> items;
 
     if (auto mpl = edit.getGlobalMacros().getMacroParameterList())
-        destArray.add (mpl);
+        items.push_back (mpl);
 
     edit.visitAllTracksRecursive ([&] (Track& t)
     {
         if (auto m = dynamic_cast<MacroParameterElement*> (&t))
             if (auto mpl = m->getMacroParameterList())
-                destArray.add (mpl);
+                items.push_back (mpl);
 
-        destArray.addArray (t.getAllAutomatableEditItems());
+        auto trackItems = t.getAllAutomatableEditItems();
+        items.insert (items.end(), trackItems.begin(), trackItems.end());
         return true;
     });
 
     for (auto p : edit.getMasterPluginList())
     {
         if (auto mpl = p->getMacroParameterList())
-            destArray.add (mpl);
+            items.push_back (mpl);
 
-        destArray.add (p);
+        items.push_back (p);
     }
 
     for (auto r : edit.getRackList().getTypes())
     {
         for (auto p : r->getPlugins())
         {
-            destArray.add (p);
+            items.push_back (p);
 
             if (auto mpl = p->getMacroParameterList())
-                destArray.add (mpl);
+                items.push_back (mpl);
         }
 
         if (auto mpl = r->getMacroParameterList())
-            destArray.add (mpl);
+            items.push_back (mpl);
 
-        destArray.addArray (r->getModifierList().getModifiers());
+        for (auto m : r->getModifierList().getModifiers())
+            items.push_back (m);
     }
 
-    destArray.add (edit.getMasterVolumePlugin().get());
+    items.push_back (edit.getMasterVolumePlugin().get());
 
-    return destArray;
+    // Deduplicate
+    std::sort (items.begin(), items.end());
+    items.erase (std::unique (items.begin(), items.end()), items.end());
+
+    return items;
 }
 
 void deleteAutomation (const SelectableList& selectedClips)
@@ -1186,6 +1270,19 @@ Track* getTrackContainingModifier (const Edit& edit, const Modifier::Ptr& m)
             return list->getModifiers().contains (m);
 
         return false;
+    });
+}
+
+Track* getTrackShowingParameter (AutomatableParameter& param)
+{
+    // First try the standard way
+    if (auto track = param.getTrack())
+        return track;
+
+    // Search all tracks for one that's currently showing this parameter
+    return findTrackForPredicate (param.getEdit(), [&param] (Track& t)
+    {
+        return t.getCurrentlyShownAutoParam() == &param;
     });
 }
 
@@ -1327,4 +1424,45 @@ InputDeviceInstance::Destination* assignTrackAsInput (AudioTrack& destTrack, con
     return res ? *res : nullptr;
 }
 
-}} // namespace tracktion { inline namespace engine
+void convertAllSourcePaths (Edit& edit, bool useRelativePaths)
+{
+    edit.clipCache.visitItems ([&] (Clip* clip)
+    {
+        if (clip == nullptr)
+            return;
+
+        auto& sfr = clip->getSourceFileReference();
+        auto file = sfr.getFile();
+
+        if (file.existsAsFile())
+            sfr.setToFile (file,
+                                       useRelativePaths ? SourceFileReference::PathStyle::alwaysRelative
+                                                        : SourceFileReference::PathStyle::alwaysAbsolute,
+                                       false);
+
+        // Also handle takes for WaveAudioClips
+        if (auto wac = dynamic_cast<WaveAudioClip*> (clip))
+        {
+            auto takesTree = wac->state.getChildWithName (IDs::TAKES);
+
+            for (int i = 0; i < takesTree.getNumChildren(); ++i)
+            {
+                auto take = takesTree.getChild (i);
+
+                if (take.hasProperty (IDs::source))
+                {
+                    SourceFileReference takeSfr (edit, take, IDs::source);
+                    auto takeFile = takeSfr.getFile();
+
+                    if (takeFile.existsAsFile())
+                        takeSfr.setToFile (takeFile,
+                                                    useRelativePaths ? SourceFileReference::PathStyle::alwaysRelative
+                                                                     : SourceFileReference::PathStyle::alwaysAbsolute,
+                                                    false);
+                }
+            }
+        }
+    });
+}
+
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -21,7 +20,7 @@ class EditClip    : public AudioClipBase,
 {
 public:
     //==============================================================================
-    EditClip (const juce::ValueTree&, EditItemID, ClipOwner&, ProjectItemID sourceEdit);
+    EditClip (const juce::ValueTree&, EditItemID, ClipOwner&, ProjectItemRef sourceEdit);
     ~EditClip() override;
 
     using Ptr = juce::ReferenceCountedObjectPtr<EditClip>;
@@ -79,15 +78,19 @@ public:
 
     juce::CachedValue<bool> copyColourFromMarker, trimToMarker, renderEnabled;
 
+    /** @internal */
+    void editFinishedLoading();
+
 protected:
     void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
 
 private:
     //==============================================================================
+    std::unique_ptr<Edit::LoadFinishedCallback<EditClip>> editLoadedCallback;
     AsyncCaller sourceIdUpdater;
 
     //==============================================================================
-    ProjectItemID lastSourceId;
+    ProjectItemRef lastSourceRef;
     EditSnapshot::Ptr editSnapshot;
     juce::ReferenceCountedArray<EditSnapshot> referencedEdits;
 
@@ -107,4 +110,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EditClip)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

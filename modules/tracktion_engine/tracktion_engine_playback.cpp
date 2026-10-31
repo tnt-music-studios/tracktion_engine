@@ -52,10 +52,10 @@
       #include <ifaddrs.h>
      #endif
 
-    #include "../3rd_party/choc/platform/choc_DisableAllWarnings.h"
+    #include "../3rd_party/choc/choc/platform/choc_DisableAllWarnings.h"
      #include <ableton/Link.hpp>
      #include <ableton/link/HostTimeFilter.hpp>
-    #include "../3rd_party/choc/platform/choc_ReenableAllWarnings.h"
+    #include "../3rd_party/choc/choc/platform/choc_ReenableAllWarnings.h"
 
      #if JUCE_ANDROID
       #include <ifaddrs.cpp>
@@ -131,7 +131,7 @@ extern "C"
 #define ENABLE_SINC_MEDIUM_CONVERTER
 #define ENABLE_SINC_FAST_CONVERTER
 
-#include "../3rd_party/choc/platform/choc_DisableAllWarnings.h"
+#include "../3rd_party/choc/choc/platform/choc_DisableAllWarnings.h"
 
 #if __GNUC__
  #pragma GCC diagnostic ignored "-Wpedantic"
@@ -158,7 +158,7 @@ namespace tracktion
 #undef ENABLE_SINC_MEDIUM_CONVERTER
 #undef ENABLE_SINC_FAST_CONVERTER
 
-#include "../3rd_party/choc/platform/choc_ReenableAllWarnings.h"
+#include "../3rd_party/choc/choc/platform/choc_ReenableAllWarnings.h"
 #include "../3rd_party/crill/seqlock_object.h"
 
 //==============================================================================
@@ -187,6 +187,7 @@ using namespace std::literals;
 #include "playback/graph/tracktion_DynamicOffsetNode.h"
 #include "playback/graph/tracktion_FadeInOutNode.h"
 #include "playback/graph/tracktion_PluginNode.h"
+#include "playback/graph/tracktion_ChannelRemappingNode.h"
 #include "playback/graph/tracktion_InsertSendNode.h"
 #include "playback/graph/tracktion_LevelMeasurerProcessingNode.h"
 #include "playback/graph/tracktion_LevelMeasuringNode.h"
@@ -219,6 +220,9 @@ using namespace std::literals;
 #include "playback/graph/tracktion_AuxSendNode.cpp"
 #include "playback/graph/tracktion_ClickNode.cpp"
 #include "playback/graph/tracktion_ClickNode.test.cpp"
+#include "playback/graph/tracktion_ClipLauncher.test.cpp"
+#include "playback/graph/tracktion_ClipLauncherFuzz.test.cpp"
+#include "playback/graph/tracktion_MidiLoopEdges.test.cpp"
 #include "playback/graph/tracktion_CombiningNode.cpp"
 #include "playback/graph/tracktion_ContainerClipNode.cpp"
 #include "playback/graph/tracktion_DynamicOffsetNode.cpp"
@@ -240,6 +244,8 @@ using namespace std::literals;
 #include "playback/graph/tracktion_RackReturnNode.cpp"
 #include "playback/graph/tracktion_PluginNode.cpp"
 #include "playback/graph/tracktion_PluginNodeBenchmarks.test.cpp"
+#include "playback/graph/tracktion_ChannelRemappingNode.cpp"
+#include "playback/graph/tracktion_ChannelRemappingNode.test.cpp"
 #include "playback/graph/tracktion_ModifierNode.cpp"
 
 #include "playback/graph/tracktion_TrackMutingNode.cpp"
@@ -276,6 +282,7 @@ using namespace std::literals;
 #include "playback/tracktion_TransportControl.cpp"
 #include "playback/tracktion_AbletonLink.cpp"
 
+#include "playback/devices/tracktion_IODevice.cpp"
 #include "playback/devices/tracktion_InputDevice.cpp"
 #include "playback/devices/tracktion_MidiInputDevice.cpp"
 #include "playback/devices/tracktion_PhysicalMidiInputDevice.cpp"
@@ -286,6 +293,7 @@ using namespace std::literals;
 #include "playback/devices/tracktion_WaveInputDevice.cpp"
 #include "playback/devices/tracktion_WaveInputDevice.test.cpp"
 #include "playback/devices/tracktion_WaveOutputDevice.cpp"
+#include "playback/devices/tracktion_WaveOutputDevice.test.cpp"
 
 #include "playback/tracktion_HostedAudioDevice.cpp"
 
@@ -308,15 +316,15 @@ static inline void sprintf (char* dest, size_t maxLength, const char* format, ..
 #include "control_surfaces/tracktion_ControlSurface.cpp"
 #include "control_surfaces/tracktion_ExternalControllerManager.cpp"
 #include "control_surfaces/tracktion_ExternalController.cpp"
+#include "control_surfaces/tracktion_ExternalController.test.cpp"
 #include "control_surfaces/tracktion_CustomControlSurface.cpp"
 
 #if TRACKTION_ENABLE_CONTROL_SURFACES
  #if TRACKTION_ENABLE_CONTROL_SURFACE_MACKIEC4
-  namespace tracktion { inline namespace engine
-  {
+  namespace tracktion::inline engine {
     #include "Mackie/C4Translator.h"
     #include "Mackie/C4Translator.cpp"
-  }} // namespace tracktion { inline namespace engine
+  } // namespace tracktion::inline engine
  #endif
 
  #include "control_surfaces/types/tracktion_AlphaTrack.cpp"

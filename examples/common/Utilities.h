@@ -371,7 +371,7 @@ struct Thumbnail    : public Component
             return;
 
         jassert (getWidth() > 0);
-        const float proportion = e.position.x / getWidth();
+        const float proportion = e.position.x / static_cast<float> (getWidth());
         transport.setPosition (toPosition (transport.getLoopRange().getLength()) * proportion);
     }
 
@@ -389,7 +389,7 @@ struct Thumbnail    : public Component
             // Simple quantisation for demo purposes here
             //  1. Quantise the position to jump to
             //  2. Quantise the time to jump to it
-            const float proportion = e.position.x / getWidth();
+            const float proportion = e.position.x / static_cast<float> (getWidth());
             auto positionToJumpTo = toPosition (transport.getLoopRange().getLength()) * proportion;
 
             if (quantisationNumBars)
@@ -407,9 +407,22 @@ struct Thumbnail    : public Component
     }
 
 private:
+    //==============================================================================
+    // In JUCE 9, Drawable is no longer a Component so DrawableRectangle can't be
+    // used as a child cursor. This mimics the parts of its interface we need.
+    struct CursorComponent  : public Component
+    {
+        CursorComponent()                               { setInterceptsMouseClicks (false, false); }
+        void setFill (Colour c)                         { colour = c; repaint(); }
+        void setRectangle (juce::Rectangle<float> r)    { setBounds (r.getSmallestIntegerContainer()); }
+        void paint (Graphics& g) override               { g.fillAll (colour); }
+
+        Colour colour;
+    };
+
     te::TransportControl& transport;
     te::SmartThumbnail smartThumbnail { transport.engine, te::AudioFile (transport.engine), *this, nullptr };
-    DrawableRectangle cursor, pendingCursorTo, pendingCursorAt;
+    CursorComponent cursor, pendingCursorTo, pendingCursorAt;
     te::LambdaTimer cursorUpdater;
     std::optional<int> quantisationNumBars;
     std::optional<te::TimePosition> positionToJumpAt;

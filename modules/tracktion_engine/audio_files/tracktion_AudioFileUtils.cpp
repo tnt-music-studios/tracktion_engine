@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 juce::AudioFormatReader* AudioFileUtils::createReaderFor (Engine& engine, const juce::File& file)
 {
@@ -122,6 +121,35 @@ juce::AudioFormatWriter* AudioFileUtils::createWriterFor (Engine& engine,
 {
     if (auto format = engine.getAudioFileFormatManager().getFormatFromFileName (file))
         return createWriterFor (format, file, sampleRate, numChannels, bitsPerSample, metadata, quality);
+
+    return {};
+}
+
+juce::AudioFormatWriter* AudioFileUtils::createWriterFor (juce::AudioFormat* format, const juce::File& file,
+                                                          double sampleRate, unsigned int numChannels, int bitsPerSample,
+                                                          const juce::StringPairArray& metadata, int quality,
+                                                          const juce::AudioChannelSet& channelLayout)
+{
+    if (auto out = std::unique_ptr<juce::OutputStream> (file.createOutputStream()))
+    {
+        std::unordered_map<juce::String, juce::String> metadataMap;
+
+        for (const auto& key : metadata.getAllKeys())
+            metadataMap[key] = metadata[key];
+
+        if (auto writer = format->createWriterFor (out,
+                                                   juce::AudioFormatWriterOptions()
+                                                    .withSampleRate (sampleRate)
+                                                    .withNumChannels (static_cast<int> (numChannels))
+                                                    .withBitsPerSample (bitsPerSample)
+                                                    .withMetadataValues (metadataMap)
+                                                    .withQualityOptionIndex (quality)
+                                                    .withChannelLayout (channelLayout)))
+        {
+            out.release();
+            return writer.release();
+        }
+    }
 
     return {};
 }
@@ -328,7 +356,8 @@ bool AudioFileUtils::reverse (Engine& engine,
     AudioFileWriter writer (AudioFile (engine, destination), engine.getAudioFileFormatManager().getWavFormat(),
                             (int) reader->numChannels, reader->sampleRate,
                             std::max (16, (int) reader->bitsPerSample),
-                            reader->metadataValues, 0);
+                            reader->metadataValues, 0,
+                            reader->getChannelLayout());
 
     if (auto af = writer.file.getFormat())
     {
@@ -384,7 +413,7 @@ bool AudioFileUtils::reverse (Engine& engine,
         samplesToDo -= numThisTime;
         sourceSample += numThisTime;
 
-        progress = juce::jlimit (0.0f, 1.0f, (float) (sourceSample / (double) reader->lengthInSamples));
+        progress = juce::jlimit (0.0f, 1.0f, float (double (sourceSample) / double (reader->lengthInSamples)));
 
         if (job != nullptr)
             shouldExit = job->shouldExit();
@@ -463,4 +492,4 @@ void AudioFileUtils::applyBWAVStartTime (const juce::File& file, SampleCount tim
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

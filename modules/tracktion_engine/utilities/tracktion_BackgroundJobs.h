@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class BackgroundJobManager;
 
@@ -197,7 +196,7 @@ private:
             }
         }
 
-        newTotal = (numJobs > 0) ? (newTotal / numJobs) : 1.0f;
+        newTotal = (numJobs > 0) ? (newTotal / float (numJobs)) : 1.0f;
 
         if (newTotal > totalProgress)
             totalProgress = totalProgress + ((newTotal - totalProgress) / 2.0f);
@@ -237,7 +236,17 @@ inline void ThreadPoolJobWithProgress::setName (const juce::String& newName)
     setJobName (newName);
 
     if (manager != nullptr)
+    {
+        {
+            const juce::ScopedLock sl (manager->jobsLock);
+
+            for (auto pair : manager->jobs)
+                if (&pair->job == this)
+                    pair->info.name = newName;
+        }
+
         manager->triggerAsyncUpdate();
+    }
 }
 
 inline void ThreadPoolJobWithProgress::prepareForJobDeletion()
@@ -248,4 +257,4 @@ inline void ThreadPoolJobWithProgress::prepareForJobDeletion()
     manager = nullptr;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

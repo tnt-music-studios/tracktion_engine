@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 bool UIBehaviour::paste (const Clipboard& clipboard)
 {
@@ -34,26 +33,42 @@ void UIBehaviour::showWarningAlert (const juce::String& title, const juce::Strin
     juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon, title, message);
 }
 
-bool UIBehaviour::showOkCancelAlertBox (const juce::String& title, const juce::String& message,
-                                        const juce::String& ok, const juce::String& cancel)
+void UIBehaviour::showOkCancelAlertBoxAsync (const juce::String& title, const juce::String& message,
+                                              const juce::String& ok, const juce::String& cancel,
+                                              std::function<void (bool)> callback)
 {
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    return juce::AlertWindow::showOkCancelBox (juce::AlertWindow::QuestionIcon, title, message, ok, cancel);
-   #else
-    jassertfalse; // These methods are currently unsupported in non-modal mode and calls to them from within the Engine will be replaced
-    return true;
-   #endif
+    auto options = juce::MessageBoxOptions()
+                     .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                     .withTitle (title)
+                     .withMessage (message)
+                     .withButton (ok.isNotEmpty() ? ok : TRANS("OK"), 1)
+                     .withButton (cancel.isNotEmpty() ? cancel : TRANS("Cancel"), 0);
+
+    juce::AlertWindow::showAsync (options, [cb = std::move (callback)] (int result)
+    {
+        if (cb)
+            cb (result == 1);
+    });
 }
 
-int UIBehaviour::showYesNoCancelAlertBox (const juce::String& title, const juce::String& message,
-                                          const juce::String& yes, const juce::String& no, const juce::String& cancel)
+void UIBehaviour::showYesNoCancelAlertBoxAsync (const juce::String& title, const juce::String& message,
+                                                 const juce::String& yes, const juce::String& no,
+                                                 const juce::String& cancel,
+                                                 std::function<void (int)> callback)
 {
-   #if JUCE_MODAL_LOOPS_PERMITTED
-    return juce::AlertWindow::showYesNoCancelBox (juce::AlertWindow::QuestionIcon, title, message, yes, no, cancel);
-   #else
-    jassertfalse; // These methods are currently unsupported in non-modal mode and calls to them from within the Engine will be replaced
-    return 1;
-   #endif
+    auto options = juce::MessageBoxOptions()
+                     .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                     .withTitle (title)
+                     .withMessage (message)
+                     .withButton (yes.isNotEmpty() ? yes : TRANS("Yes"), 1)
+                     .withButton (no.isNotEmpty() ? no : TRANS("No"), 2)
+                     .withButton (cancel.isNotEmpty() ? cancel : TRANS("Cancel"), 0);
+
+    juce::AlertWindow::showAsync (options, [cb = std::move (callback)] (int result)
+    {
+        if (cb)
+            cb (result);
+    });
 }
 
 void UIBehaviour::showInfoMessage (const juce::String& message)
@@ -223,9 +238,25 @@ TimeRange UIBehaviour::getEditingRange (Edit& e)
     return e.getTransport().getLoopRange();
 }
 
+juce::Colour UIBehaviour::getClipColourForControlSurface (const Clip& c)
+{
+    return c.getColour();
+}
+
+int UIBehaviour::getClipColourIndexForControlSurface (const Clip& c)
+{
+    const auto colour = getClipColourForControlSurface (c);
+
+    if (colour.isTransparent())
+        return 0;
+
+    const auto numIndexes = getNumClipColourIndexes();
+    return juce::jlimit (1, numIndexes, juce::roundToInt (colour.getHue() * static_cast<float> (numIndexes)) + 1);
+}
+
 void UIBehaviour::recreatePluginWindowContentAsync (Plugin& p)
 {
     p.windowState->recreateWindowIfShowing();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

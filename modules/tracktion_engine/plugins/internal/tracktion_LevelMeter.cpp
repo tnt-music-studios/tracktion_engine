@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 LevelMeterPlugin::LevelMeterPlugin (PluginCreationInfo info)  : Plugin (info)
 {
@@ -35,6 +34,7 @@ const char* LevelMeterPlugin::xmlTypeName = "level";
 void LevelMeterPlugin::initialise (const PluginInitialisationInfo& info)
 {
     measurer.clear();
+    measurer.addClient (controllerLevelClient);
     initialiseWithoutStopping (info);
 }
 
@@ -55,6 +55,7 @@ void LevelMeterPlugin::initialiseWithoutStopping (const PluginInitialisationInfo
 
 void LevelMeterPlugin::deinitialise()
 {
+    measurer.removeClient (controllerLevelClient);
     measurer.clear();
     stopTimer();
 }
@@ -81,8 +82,16 @@ void LevelMeterPlugin::timerCallback()
 
         if (ecm.isAttachedToEdit (edit))
         {
-            auto l = measurer.getLevelCache();
-            ecm.channelLevelChanged (controllerTrack, dbToGain (l.first), dbToGain (l.second));
+            // Grow on demand so we can support any channel count (e.g. ambisonic
+            // tracks). This runs on the message thread at 50 Hz, so the resize is
+            // not a realtime concern; in steady state the capacity is preserved.
+            const auto numChans = controllerLevelClient.getNumChannelsUsed();
+            controllerGainsBuffer.resize ((size_t) numChans);
+
+            for (int i = 0; i < numChans; ++i)
+                controllerGainsBuffer[(size_t) i] = dbToGain (controllerLevelClient.getAndClearAudioLevel (i).dB);
+
+            ecm.channelLevelChanged (controllerTrack, { controllerGainsBuffer.data(), (size_t) numChans });
         }
     }
 }
@@ -95,4 +104,4 @@ void LevelMeterPlugin::restorePluginStateFromValueTree (const juce::ValueTree& v
         p->updateFromAttachedValue();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -11,8 +11,7 @@
 #pragma once
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 ModifierNode::ModifierNode (std::unique_ptr<Node> inputNode,
                             tracktion::engine::Modifier::Ptr modifierToProcess,
@@ -96,12 +95,13 @@ void ModifierNode::process (ProcessContext& pc)
     // Setup audio buffers
     auto outputAudioBuffer = tracktion::graph::toAudioBuffer (outputAudioBlock);
 
-    // Then MIDI buffers
-    midiMessageArray.copyFrom (inputBuffers.midi);
+    // Check enabled state before copying MIDI
     bool shouldProcess = getBoolParamValue (*modifier->enabledParam);
 
+    bool isAllNotesOff = inputBuffers.midi.isAllNotesOff;
+
     if (playHeadState != nullptr && playHeadState->didPlayheadJump())
-        midiMessageArray.isAllNotesOff = true;
+        isAllNotesOff = true;
 
     if (trackMuteState != nullptr)
     {
@@ -110,22 +110,29 @@ void ModifierNode::process (ProcessContext& pc)
             shouldProcess = shouldProcess && trackMuteState->shouldTrackBeAudible();
 
             if (trackMuteState->wasJustMuted())
-                midiMessageArray.isAllNotesOff = true;
+                isAllNotesOff = true;
         }
     }
 
-    // Process the plugin
     if (shouldProcess)
+    {
+        midiMessageArray.copyFrom (inputBuffers.midi);
+        midiMessageArray.isAllNotesOff = isAllNotesOff;
         modifier->baseClassApplyToBuffer (getPluginRenderContext (pc.referenceSampleRange, outputAudioBuffer));
+    }
 
     if (clearOutputs == ClearOutputs::yes)
     {
         outputAudioBlock.clear();
     }
+    else if (shouldProcess)
+    {
+        outputBuffers.midi.copyFrom (midiMessageArray);
+    }
     else
     {
-        // Then copy the buffers to the outputs
-        outputBuffers.midi.copyFrom (midiMessageArray);
+        outputBuffers.midi.copyFrom (inputBuffers.midi);
+        outputBuffers.midi.isAllNotesOff = isAllNotesOff;
     }
 }
 
@@ -158,11 +165,10 @@ PluginRenderContext ModifierNode::getPluginRenderContext (juce::Range<int64_t> r
     jassert (! timelineRange.isSplit);
 
     return { &destBuffer,
-             juce::AudioChannelSet::canonicalChannelSet (destBuffer.getNumChannels()),
              0, destBuffer.getNumSamples(),
              &midiMessageArray, 0.0,
              timeRangeFromSamples (timelineRange.timelineRange1, sampleRate) + automationAdjustmentTime,
              playHead.isPlaying(), playHead.isUserDragging(), isRendering, false };
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

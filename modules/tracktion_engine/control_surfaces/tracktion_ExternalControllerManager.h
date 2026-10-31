@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** An area of the edit currently control by a control surface */
 struct ColourArea
@@ -112,8 +111,8 @@ public:
     void playStateChanged (bool isPlaying);
     void recordStateChanged (bool isRecording);
     void automationModeChanged (bool isReading, bool isWriting);
-    void channelLevelChanged (int channel, float l, float r);
-    void masterLevelsChanged (float leftLevel, float rightLevel);
+    void channelLevelChanged (int channel, std::span<const float> levels);
+    void masterLevelsChanged (std::span<const float> levels);
     void timecodeChanged (int barsOrHours, int beatsOrMinutes, int ticksOrSeconds,
                           int millisecs, bool isBarsBeats, bool isFrames);
     void editPositionChanged (Edit*, TimePosition newCursorPosition);
@@ -221,6 +220,9 @@ private:
 
     LambdaTimer masterLevelsTimer;
 
+    struct MasterLevelClientState;
+    std::unique_ptr<MasterLevelClientState> masterLevelState;
+
     ExternalController* addNewController (ControlSurface*);
 
     juce::Array<ExternalController*> getActiveDevices() const;
@@ -230,4 +232,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ExternalControllerManager)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

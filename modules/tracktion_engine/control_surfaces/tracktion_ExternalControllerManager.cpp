@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 bool ColourArea::contains (ClipSlot& clipSlot) const
 {
@@ -133,6 +132,8 @@ private:
         {
             if (i == IDs::name)
                 owner.updateDeviceState();
+            else if (i == IDs::colour)
+                updatePads.set (true); // clips can be shown in their track's colour
         }
     }
 
@@ -195,21 +196,50 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EditTreeWatcher)
 };
 
+struct ExternalControllerManager::MasterLevelClientState
+{
+    LevelMeasurer::Client client;
+    juce::WeakReference<LevelMeasurer> measurer;
+};
+
 //==============================================================================
 ExternalControllerManager::ExternalControllerManager (Engine& e) : engine (e)
 {
     blinkTimer = std::make_unique<BlinkTimer> (*this);
+    masterLevelState = std::make_unique<MasterLevelClientState>();
+
     masterLevelsTimer.setCallback ([this]
     {
         if (currentEdit == nullptr)
             return;
 
         auto ctx = currentEdit->getCurrentPlaybackContext();
-        if (ctx == nullptr)
-            return;
 
-        auto l = ctx->masterLevels.getLevelCache();
-        masterLevelsChanged (dbToGain (l.first), dbToGain (l.second));
+        if (ctx == nullptr)
+        {
+            if (auto m = masterLevelState->measurer.get())
+                m->removeClient (masterLevelState->client);
+
+            masterLevelState->measurer = nullptr;
+            return;
+        }
+
+        if (&ctx->masterLevels != masterLevelState->measurer.get())
+        {
+            if (auto m = masterLevelState->measurer.get())
+                m->removeClient (masterLevelState->client);
+
+            masterLevelState->measurer = &ctx->masterLevels;
+            masterLevelState->measurer->addClient (masterLevelState->client);
+        }
+
+        auto numChans = masterLevelState->client.getNumChannelsUsed();
+        float gains[32];
+
+        for (int i = 0; i < numChans; ++i)
+            gains[i] = dbToGain (masterLevelState->client.getAndClearAudioLevel (i).dB);
+
+        masterLevelsChanged ({ gains, (size_t) numChans });
     });
 }
 
@@ -307,6 +337,12 @@ void ExternalControllerManager::setCurrentEdit (Edit* newEdit, SelectionManager*
 
         if (currentEdit != nullptr)
             currentEdit->getTransport().removeChangeListener (this);
+
+        if (auto m = masterLevelState->measurer.get())
+        {
+            m->removeClient (masterLevelState->client);
+            masterLevelState->measurer = nullptr;
+        }
 
         currentEdit = newEdit;
 
@@ -707,7 +743,7 @@ void ExternalControllerManager::automationModeChanged (bool isReading, bool isWr
     FOR_EACH_ACTIVE_DEVICE (automationModeChanged (isReading, isWriting));
 }
 
-void ExternalControllerManager::channelLevelChanged (int channel, float l, float r)
+void ExternalControllerManager::channelLevelChanged (int channel, std::span<const float> levels)
 {
     CRASH_TRACER
     // This is an optimisation that avoids calling mapTrackNumToChannelNum if there are no enabled/active devices
@@ -724,13 +760,13 @@ void ExternalControllerManager::channelLevelChanged (int channel, float l, float
         return *channelNum;
     };
 
-    FOR_EACH_ACTIVE_DEVICE (channelLevelChanged (getChannelNum(), l, r));
+    FOR_EACH_ACTIVE_DEVICE (channelLevelChanged (getChannelNum(), levels));
 }
 
-void ExternalControllerManager::masterLevelsChanged (float leftLevel, float rightLevel)
+void ExternalControllerManager::masterLevelsChanged (std::span<const float> levels)
 {
     CRASH_TRACER
-    FOR_EACH_ACTIVE_DEVICE (masterLevelsChanged (leftLevel, rightLevel));
+    FOR_EACH_ACTIVE_DEVICE (masterLevelsChanged (levels));
 }
 
 void ExternalControllerManager::timecodeChanged (int barsOrHours, int beatsOrMinutes, int ticksOrSeconds,
@@ -1288,4 +1324,4 @@ void ExternalControllerManager::refreshXTOrder()
    #endif
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,13 +8,13 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 WaveOutputDevice::WaveOutputDevice (Engine& e, const WaveDeviceDescription& desc)
-    : OutputDevice (e, NEEDS_TRANS("Wave Audio Output"), desc.name, desc.name),
-      deviceChannels (desc.channels),
-      channelSet (createChannelSet (desc.channels)),
+    : OutputDevice (e, desc.name, "waveout_" + juce::String::toHexString (desc.name.hashCode())),
+      deviceDescription (desc),
+      originalChannels (desc.channels),
+      channelSet (desc.channels.toChannelSet()),
       ditheringEnabled (false),
       leftRightReversed (false)
 {
@@ -40,7 +40,7 @@ void WaveOutputDevice::setEnabled (bool b)
     {
         enabled = b;
         changed();
-        engine.getDeviceManager().setWaveOutChannelsEnabled (deviceChannels, b);
+        engine.getDeviceManager().setDeviceEnabled (*this, b);
         // do nothing now! this object is probably deleted..
     }
 }
@@ -65,6 +65,8 @@ void WaveOutputDevice::loadProps()
         ditheringEnabled = n->getBoolAttribute ("dithering", ditheringEnabled);
         leftRightReversed = n->getBoolAttribute ("reversed", leftRightReversed);
     }
+
+    applyChannelOrdering();
 }
 
 void WaveOutputDevice::saveProps()
@@ -79,14 +81,26 @@ void WaveOutputDevice::saveProps()
 
 void WaveOutputDevice::reverseChannels (bool shouldReverse)
 {
-    jassert (isStereoPair());
+    if (deviceDescription.getNumChannels() < 2)
+        return;
 
     if (leftRightReversed != shouldReverse)
     {
         leftRightReversed = shouldReverse;
+        applyChannelOrdering();
         changed();
         saveProps();
     }
+}
+
+void WaveOutputDevice::applyChannelOrdering()
+{
+    if (leftRightReversed)
+        deviceDescription.channels = originalChannels.reversed();
+    else
+        deviceDescription.channels = originalChannels;
+
+    channelSet = deviceDescription.channels.toChannelSet();
 }
 
 void WaveOutputDevice::setDithered (bool dither)
@@ -97,6 +111,93 @@ void WaveOutputDevice::setDithered (bool dither)
         changed();
         saveProps();
     }
+}
+
+void WaveOutputDevice::updateLevelMeasurer (float* const* outputChannelData, int totalNumOutputChannels, int numSamples)
+{
+    auto& channels = getChannels();
+    auto numDeviceChannels = (int) channels.getNumChannels();
+
+    if (numDeviceChannels <= 0)
+        return;
+
+    meterChannelPtrs.resize ((size_t) numDeviceChannels);
+
+    for (int i = 0; i < numDeviceChannels; ++i)
+    {
+        auto idx = channels[(size_t) i].indexInDevice;
+
+        if (idx < 0 || idx >= totalNumOutputChannels || outputChannelData[idx] == nullptr)
+            return;
+
+        meterChannelPtrs[(size_t) i] = outputChannelData[idx];
+    }
+
+    juce::AudioBuffer<float> buf (meterChannelPtrs.data(), numDeviceChannels, numSamples);
+    levelMeasurer.processBuffer (buf, 0, numSamples);
+}
+
+void WaveOutputDevice::startTestTone()
+{
+    const auto sampleRate = engine.getDeviceManager().getSampleRate();
+
+    if (sampleRate <= 0)
+        return;
+
+    testTonePendingSampleRate.store ((float) sampleRate, std::memory_order_relaxed);
+    testTonePendingTotalSamples.store (juce::roundToInt (sampleRate), std::memory_order_relaxed);
+    testToneStartRequested.store (true, std::memory_order_release);
+}
+
+void WaveOutputDevice::renderTestTone (float* const* outputChannelData, int totalNumOutputChannels, int numSamples)
+{
+    if (testToneStartRequested.exchange (false, std::memory_order_acquire))
+    {
+        testToneTotalSamples = testTonePendingTotalSamples.load (std::memory_order_relaxed);
+        testToneSampleIndex = 0;
+        testToneSine.resetPhase();
+        testToneSine.setFrequency (440.0f, testTonePendingSampleRate.load (std::memory_order_relaxed));
+    }
+
+    if (testToneSampleIndex < 0)
+        return;
+
+    constexpr float amplitude = 0.5f;
+    const int total = testToneTotalSamples;
+    const int fadeInSamples = juce::jmax (1, total / 10);
+    const int fadeOutStart  = total - juce::jmax (1, total / 4);
+
+    auto& channels = getChannels();
+    const auto numDeviceChannels = (int) channels.getNumChannels();
+
+    const int samplesAvailable = juce::jmin (numSamples, total - testToneSampleIndex);
+
+    for (int s = 0; s < samplesAvailable; ++s)
+    {
+        const int i = testToneSampleIndex + s;
+        float env = 1.0f;
+
+        if (i < fadeInSamples)
+            env = (float) i / (float) fadeInSamples;
+        else if (i >= fadeOutStart)
+            env = (float) (total - i) / (float) (total - fadeOutStart);
+
+        const float sample = amplitude * env * testToneSine.getSample();
+
+        for (int c = 0; c < numDeviceChannels; ++c)
+        {
+            const auto idx = channels[(size_t) c].indexInDevice;
+
+            if (idx >= 0 && idx < totalNumOutputChannels)
+                if (auto* dest = outputChannelData[idx])
+                    dest[s] += sample;
+        }
+    }
+
+    testToneSampleIndex += samplesAvailable;
+
+    if (testToneSampleIndex >= total)
+        testToneSampleIndex = -1;
 }
 
 //==============================================================================
@@ -114,38 +215,74 @@ WaveOutputDeviceInstance::WaveOutputDeviceInstance (WaveOutputDevice& d, EditPla
 
 void WaveOutputDeviceInstance::prepareToPlay (double, int blockSize)
 {
-    outputBuffer.setSize (2, blockSize);
+    const auto numChannels = (int) getWaveOutput().getChannels().getNumChannels();
+    outputBuffer.setSize (numChannels, blockSize);
 
     int ditherDepth = juce::jlimit (16, 32, edit.engine.getDeviceManager().getBitDepth());
 
-    ditherers[0].reset (ditherDepth);
-    ditherers[1].reset (ditherDepth);
+    ditherers.resize ((size_t) numChannels);
+
+    for (auto& d : ditherers)
+        d.reset (ditherDepth);
 }
 
 //==============================================================================
 int WaveOutputDevice::getLeftChannel() const
 {
-    return deviceChannels.size() >= 1 ? deviceChannels[0].indexInDevice : -1;
+    return deviceDescription.getNumChannels() >= 1 ? deviceDescription.channels[0].indexInDevice : -1;
 }
 
 int WaveOutputDevice::getRightChannel() const
 {
-    return deviceChannels.size() >= 2 ? deviceChannels[1].indexInDevice : -1;
+    return deviceDescription.getNumChannels() >= 2 ? deviceDescription.channels[1].indexInDevice : -1;
 }
 
 bool WaveOutputDevice::isStereoPair() const
 {
-    return deviceChannels.size() == 2;
+    return deviceDescription.getNumChannels() == 2;
 }
 
 void WaveOutputDevice::setStereoPair (bool stereo)
 {
-    auto& dm = engine.getDeviceManager();
-
-    if (deviceChannels.size() == 2)
-        dm.setDeviceOutChannelStereo (std::max (getLeftChannel(), getRightChannel()), stereo);
-    else if (deviceChannels.size() == 1)
-        dm.setDeviceOutChannelStereo (getLeftChannel(), stereo);
+    engine.getDeviceManager().setDeviceNumChannels (*this, stereo ? 2 : 1);
 }
 
-}} // namespace tracktion { inline namespace engine
+juce::PopupMenu WaveOutputDevice::createChannelGroupMenu (bool includeSetAllChannelsOptions)
+{
+    juce::PopupMenu m;
+    auto& dm = engine.getDeviceManager();
+    auto currentNumChannels = deviceDescription.getNumChannels();
+    auto options = dm.getPossibleChannelGroupsForDevice (*this, DeviceManager::maxNumChannelsPerDevice);
+    auto totalOptions = (uint32_t) options.size();
+
+    for (uint32_t num = 1; num <= totalOptions; ++num)
+    {
+        if (shouldIncludeChannelCount (num, totalOptions))
+            m.addItem (getChannelCountLabel (num), true, num == currentNumChannels,
+                       [this, &dm, num] { dm.setDeviceNumChannels (*this, num); });
+    }
+
+    juce::PopupMenu otherMenu;
+
+    for (uint32_t num = 1; num <= totalOptions; ++num)
+        if (! shouldIncludeChannelCount (num, totalOptions))
+            otherMenu.addItem (getChannelCountLabel (num), true, num == currentNumChannels,
+                               [this, &dm, num] { dm.setDeviceNumChannels (*this, num); });
+
+    if (otherMenu.getNumItems() > 0)
+    {
+        m.addSeparator();
+        m.addSubMenu (TRANS("Other"), otherMenu);
+    }
+
+    if (includeSetAllChannelsOptions)
+    {
+        m.addSeparator();
+        m.addItem ("Set all to mono channels", [&dm] { dm.setAllWaveOutputsToNumChannels (1); });
+        m.addItem ("Set all to stereo pairs",  [&dm] { dm.setAllWaveOutputsToNumChannels (2); });
+    }
+
+    return m;
+}
+
+} // namespace tracktion::inline engine

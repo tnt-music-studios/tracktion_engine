@@ -8,19 +8,21 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 bool isMidiFile (const juce::File&);
 bool isTracktionEditFile (const juce::File&);
 bool isTracktionArchiveFile (const juce::File&);
 bool isTracktionProjectFile (const juce::File&);
+bool isTracktionProjectFolder (const juce::File&);
+bool isTracktionProjectFileOrFolder (const juce::File&);
 bool isTracktionPresetFile (const juce::File&);
 
 const char* const projectFileSuffix = ".tracktion";
 const char* const editFileSuffix = ".tracktionedit";
 const char* const legacyEditFileSuffix = ".trkedit";
-const char* const archiveFileSuffix = ".trkarch";
+const char* const legacyArchiveFileSuffix = ".trkarch";
+const char* const archiveFileSuffix_v2 = ".zip";
 
 const char* const soundFileWildCard = "*.wav;*.aiff;*.aif;*.ogg;*.mp3;*.flac;*.au;*.voc;*.caf;*.w64;*.rx2;*.rcy;*.rex;*.wfaf";
 const char* const soundFileAndMidiWildCard = "*.wav;*.aiff;*.aif;*.ogg;*.mp3;*.mid;*.midi;*.flac;*.au;*.voc;*.caf;*.w64;*.rx2;*.rcy;*.rex;*.wfaf";
@@ -76,4 +78,4 @@ struct FileDragList  : public juce::ReferenceCountedObject
     static juce::var create (const juce::File& file, PreferredLayout peferredLayout);
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

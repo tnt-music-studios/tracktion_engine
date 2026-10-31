@@ -8,8 +8,8 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
+namespace legacy {
 
 ExportJob::ExportJob (Edit* edit_,
                       const juce::File& destDir_,
@@ -92,12 +92,13 @@ void ExportJob::copyProjectFilesToTempDir()
         newProjectFile.setReadOnly (false);
 
         auto destProject = srcProject->projectManager.createNewProject (newProjectFile);
-        destProject->createNewProjectId();
+        const auto oldId = destProject->getProjectID();
+        const auto newId = FileBasedProject::generateNewProjectId (srcProject->projectManager);
 
         for (int i = 0; i < destProject->getNumProjectItems(); ++i)
         {
-            progress = ((archive != nullptr) ? 0.5f : 1.0f) * i
-                          / (float) destProject->getNumProjectItems();
+            progress = ((archive != nullptr) ? 0.5f : 1.0f) * float (i)
+                          / float (destProject->getNumProjectItems());
 
             if (shouldExit())
                 break;
@@ -138,9 +139,13 @@ void ExportJob::copyProjectFilesToTempDir()
             }
         }
 
-        callBlocking ([this, &destProject]()
+        callBlocking ([&destProject, oldId, newId]()
                       {
-                          destProject->redirectIDsFromProject (srcProject->getProjectID(), destProject->getProjectID());
+                          // Redirect first while destProject is still registered with oldId so any
+                          // plugins (e.g. Sampler) loaded by redirectIDsFromProject can resolve their
+                          // baked-in ProjectItemIDs. Only swap the project ID afterwards.
+                          destProject->redirectIDsFromProject (oldId, newId);
+                          destProject->setNewProjectId (newId);
                           destProject->save();
                       });
     }
@@ -156,28 +161,7 @@ void ExportJob::copyEditFilesToTempDir()
     jassert (edit != nullptr);
 
     if (! includeClips)
-    {
-        for (auto t : getClipTracks (*edit))
-        {
-            for (int j = t->getClips().size(); --j >= 0;)
-            {
-                auto clip = t->getClips().getUnchecked (j);
-
-                if (clip->type != TrackItem::Type::video
-                      && clip->type != TrackItem::Type::marker)
-                {
-                    clip->removeFromParent();
-                }
-            }
-        }
-
-        for (auto t : getAudioTracks (*edit))
-        {
-            for (auto s : t->getClipSlotList().getClipSlots())
-                if (auto c = s->getClip())
-                    c->removeFromParent();
-        }
-    }
+        removeAllContentClips (*edit);
 
     auto allExportables = Exportable::addAllExportables (*edit);
 
@@ -201,18 +185,18 @@ void ExportJob::copyEditFilesToTempDir()
 
         for (auto ref : exportable->getReferencedItems())
         {
-            progress = ((archive != nullptr ? 0.5f : 1.0f) * numThingsCopied) / totalThingsToCopy;
+            progress = ((archive != nullptr ? 0.5f : 1.0f) * float (numThingsCopied)) / float (totalThingsToCopy);
 
             if (shouldExit())
                 break;
 
             double start = 0.0, length = 0.0;
-            auto newFilename = refList.getReassignedFileName (ref.itemID, ref.firstTimeUsed,
+            auto newFilename = refList.getReassignedFileName (ref.itemRef, ref.firstTimeUsed,
                                                               start, length);
 
             if (length > 0.0 && newFilename.isNotEmpty())
             {
-                auto oldSourceMedia (projectManager.getProjectItem (ref.itemID));
+                auto oldSourceMedia (projectManager.getProjectItem (ref.itemRef));
 
                 if (oldSourceMedia != nullptr
                      && (includeLibraryFiles || ! oldSourceMedia->getProject()->isLibraryProject()))
@@ -253,9 +237,9 @@ void ExportJob::copyEditFilesToTempDir()
                         newSourceItem = newProject->getProjectItemForFile (newFile);
                     }
 
-                    auto newID = newSourceItem != nullptr ? newSourceItem->getID() : ProjectItemID();
+                    auto newRef = newSourceItem != nullptr ? newSourceItem->getProjectItemRef() : ProjectItemRef();
 
-                    callBlocking ([=]() { exportable->reassignReferencedItem (ref, newID, start); });
+                    callBlocking ([=]() { exportable->reassignReferencedItem (ref, newRef, start); });
                 }
             }
             else
@@ -268,7 +252,7 @@ void ExportJob::copyEditFilesToTempDir()
     }
 
     // put the new edit at the top of the list
-    newProject->moveProjectItem (newProject->getIndexOf (edit->getProjectItemID()), 0);
+    newProject->moveProjectItem (newProject->getIndexOf (edit->getProjectItemRef()), 0);
     callBlocking ([this] { EditFileOperations (*edit).save (true, true, false); });
 }
 
@@ -287,7 +271,7 @@ void ExportJob::createArchiveFromTempFiles()
 
         for (int i = 0; i < filesForDeletion.size(); ++i)
         {
-            progress = 0.5f + 0.5f * i / filesForDeletion.size();
+            progress = 0.5f + 0.5f * float (i) / float (filesForDeletion.size());
 
             if (shouldExit())
                 break;
@@ -313,4 +297,5 @@ float ExportJob::getCurrentTaskProgress()
     return progress;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace legacy
+} // namespace tracktion::inline engine

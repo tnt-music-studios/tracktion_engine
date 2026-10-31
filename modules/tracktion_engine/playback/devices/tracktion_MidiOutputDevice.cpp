@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static bool shouldSendAllControllersOffMessages = true;
 
@@ -262,7 +261,7 @@ private:
 
 //==============================================================================
 MidiOutputDevice::MidiOutputDevice (Engine& e, juce::MidiDeviceInfo info)
-    : OutputDevice (e, NEEDS_TRANS("MIDI Output"), info.name, info.identifier),
+    : OutputDevice (e, info.name, "midiout_" + juce::String::toHexString (info.identifier.hashCode())),
       deviceInfo (std::move (info))
 {
     enabled = true;
@@ -273,6 +272,8 @@ MidiOutputDevice::MidiOutputDevice (Engine& e, juce::MidiDeviceInfo info)
 
     loadProps();
     shouldSendAllControllersOffMessages = getControllerOffMessagesSent (engine);
+
+    levelMeasurer.setShowMidi (true);
 }
 
 MidiOutputDevice::~MidiOutputDevice()
@@ -490,6 +491,11 @@ void MidiOutputDevice::sendNoteOffMessages()
 
 void MidiOutputDevice::sendMessageNow (const juce::MidiMessage& message)
 {
+    // juce::MidiOutput isn't thread safe, so serialise sends here as this
+    // can be called from the MIDI dispatch thread, the message thread
+    // (control surface feedback, MMC) and device-detection scans.
+    const juce::SpinLock::ScopedLockType sl (outputDeviceLock);
+
     if (outputDevice != nullptr)
         outputDevice->sendMessageNow (message);
 }
@@ -499,6 +505,9 @@ void MidiOutputDevice::fireMessage (const juce::MidiMessage& message)
     if (! message.isMetaEvent())
     {
         sendMessageNow (message);
+
+        if (message.isNoteOn())
+            levelMeasurer.processMidiLevel (message.getFloatVelocity());
 
         if (message.isNoteOnOrOff())
         {
@@ -679,4 +688,4 @@ void MidiOutputDeviceInstance::addMidiClockMessagesToCurrentBlock (bool isPlayin
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

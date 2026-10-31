@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine { namespace dawproject
-{
+namespace tracktion::inline engine { namespace dawproject {
 
 //==============================================================================
 /**
@@ -49,6 +48,9 @@ private:
     juce::XmlElement* createLanes (juce::XmlElement& parent, Track& track);
     juce::XmlElement* createClipsElement (juce::XmlElement& parent, ClipTrack& track);
     juce::XmlElement* createMarkersElement (juce::XmlElement& parent);
+
+    // Scenes (clip launcher) export
+    juce::XmlElement* createScenes (juce::XmlElement& parent);
 
     // Clip export
     juce::XmlElement* createClipElement (juce::XmlElement& parent, Clip& clip);
@@ -105,4 +107,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DAWprojectExporter)
 };
 
-}}} // namespace tracktion::engine::dawproject
+}} // namespace tracktion::inline engine::dawproject

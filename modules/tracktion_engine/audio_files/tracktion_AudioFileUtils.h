@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -35,6 +34,11 @@ struct AudioFileUtils
     static juce::AudioFormatWriter* createWriterFor (juce::AudioFormat*, const juce::File&,
                                                      double sampleRate, unsigned int numChannels, int bitsPerSample,
                                                      const juce::StringPairArray& metadata, int quality);
+
+    static juce::AudioFormatWriter* createWriterFor (juce::AudioFormat*, const juce::File&,
+                                                     double sampleRate, unsigned int numChannels, int bitsPerSample,
+                                                     const juce::StringPairArray& metadata, int quality,
+                                                     const juce::AudioChannelSet& channelLayout);
 
     static SampleRange scanForNonZeroSamples (Engine&, const juce::File&, float maxZeroLevelDb);
 
@@ -143,7 +147,7 @@ struct AudioFileUtils
                             numLeft -= numThisTime;
 
                             if (updateProgress)
-                                updateProgress (static_cast<float> (startSample) / reader->lengthInSamples);
+                                updateProgress (static_cast<float> (startSample) / static_cast<float> (reader->lengthInSamples));
 
                             if (numLeft <= 0)
                             {
@@ -244,4 +248,4 @@ struct AudioFileUtils
     };
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

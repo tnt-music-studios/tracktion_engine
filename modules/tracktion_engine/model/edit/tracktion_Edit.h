@@ -8,7 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine
 {
 
 class ClipEffect;
@@ -108,7 +108,7 @@ public:
     {
         Engine& engine;                                              ///< The Engine to use.
         juce::ValueTree editState;                                   ///< The Edit state. @see createEmptyEdit
-        ProjectItemID editProjectItemID;                             ///< The editProjectItemID, must be valid.
+        ProjectItemRef editProjectItemID;                            ///< A ProjectItemID or file path identifying this Edit.
 
         EditRole role = forEditing;                                  ///< An optional role to open the Edit with.
         LoadContext* loadContext = nullptr;                          ///< An optional context to be monitor for loading status.
@@ -158,11 +158,11 @@ public:
     */
     FilePathResolver filePathResolver;
 
-    /** Sets the ProjectItemID of the Edit, this is also stored in the state. */
-    void setProjectItemID (ProjectItemID);
+    /** Sets the ProjectItemRef of the Edit, this is also stored in the state. */
+    void setProjectItemRef (ProjectItemRef);
 
-    /** Returns the ProjectItemID of the Edit. */
-    ProjectItemID getProjectItemID() const noexcept    { return editProjectItemID; }
+    /** Returns the ProjectItemRef that was used to create this Edit. */
+    const ProjectItemRef& getProjectItemRef() const noexcept    { return editProjectItemRef; }
 
     //==============================================================================
     /** Returns the EditRole. */
@@ -241,7 +241,11 @@ public:
     /** Creates an Edit with a single AudioTrack. */
     static std::unique_ptr<Edit> createSingleTrackEdit (Engine&, EditRole role = EditRole::forEditing);
 
-    /** Creates an Edit that loads a state, using the role Edit::forExamining */
+    /** Creates an Edit that loads a state, using the role Edit::forExamining.
+        @deprecated Use loadEditForExamining(ProjectManager&, ProjectItemRef) for file-based edits.
+                    This function doesn't set editFileRetriever, so relative paths won't resolve.
+    */
+    [[deprecated("Use loadEditForExamining for file-based edits")]]
     static std::unique_ptr<Edit> createEditForExamining (Engine&, juce::ValueTree, EditRole role = EditRole::forExamining, LoadContext* = nullptr);
 
     //==============================================================================
@@ -731,6 +735,31 @@ public:
     /** Marks the edit as being significantly changed and should therefore be saved. */
     void markAsChanged();
 
+    /** Stops the Edit being written to disk.
+
+        Hold one of these across any operation that temporarily changes the Edit
+        and restores it afterwards - a stem render muting the tracks that feed
+        the other stems, for instance. Without it an autosave landing mid-operation
+        would persist state the user never asked for.
+    */
+    struct SaveInhibitor
+    {
+        /** Creates a SaveInhibitor for an Edit. */
+        SaveInhibitor (Edit&);
+
+        /** Creates a copy of a SaveInhibitor for an Edit. */
+        SaveInhibitor (const SaveInhibitor&);
+
+        /** Destructor. If this is the last SaveInhibitor, saving is re-allowed. */
+        ~SaveInhibitor();
+
+    private:
+        SafeSelectable<Edit> edit;
+    };
+
+    /** Returns true if a SaveInhibitor is currently stopping this Edit being saved. */
+    bool isSaveInhibited() const noexcept                { return numSaveInhibitors > 0; }
+
     /** Invalidates the stored length so the next call to getLength will update form the Edit contents.
         You shouldn't normally need to call this as it will happen automatically as clips are added/removed.
     */
@@ -854,10 +883,11 @@ public:
                             clickTrackEmphasiseBars,            ///< Whether the click track should emphasise bars.
                             clickTrackRecordingOnly,            ///< Whether the click track should be audible only when recording.
                             recordingPunchInOut,                ///< Whether recoridng only happens within the in/out markers.
-                            playInStopEnabled;                  ///< Whether the audio engine should run when playback is stopped.
+                            playInStopEnabled,                  ///< Whether the audio engine should run when playback is stopped.
+                            alwaysUseRelativePaths;             ///< Whether clip source paths should always be stored as relative.
 
     juce::CachedValue<float> clickTrackGain;        ///< The gain of the click track.
-    juce::CachedValue<ProjectItemID> videoSource;   ///< The ProjectItemID of the video source.
+    juce::CachedValue<ProjectItemRef> videoSource;   ///< The ProjectItemRef of the video source.
 
     juce::ValueTree state { IDs::EDIT };     ///< The ValueTree of the Edit state.
     juce::ValueTree inputDeviceState;        ///< The ValueTree of the input device states.
@@ -865,7 +895,7 @@ public:
 private:
     //==============================================================================
     const int instanceId;
-    std::atomic<ProjectItemID> editProjectItemID { ProjectItemID() };
+    ProjectItemRef editProjectItemRef;
 
     // persistent properties (i.e. stuff that gets saved)
     juce::CachedValue<juce::String> clickTrackDevice;
@@ -909,6 +939,7 @@ private:
     LoadContext* loadContext = nullptr;
     juce::UndoManager undoManager;
     int numUndoTransactionInhibitors = 0;
+    int numSaveInhibitors = 0;
     mutable juce::File tempDirectory;
     juce::Array<EditItemID> lowLatencyDisabledPlugins;
     double normalLatencyBufferSizeSeconds = 0.0;
@@ -1025,4 +1056,4 @@ private:
     ActiveEdits();
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

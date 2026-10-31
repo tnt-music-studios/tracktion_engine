@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -27,8 +26,8 @@ public:
     using Ptr = juce::ReferenceCountedObjectPtr<WaveAudioClip>;
 
     //==============================================================================
-    /** Adds a new take with the ProjectItemID as the source. */
-    void addTake (ProjectItemID);
+    /** Adds a new take with the ProjectItemRef as the source. */
+    void addTake (ProjectItemRef);
 
     /** Adds a new take with the given file as the source. */
     void addTake (const juce::File&);
@@ -95,7 +94,7 @@ public:
     /** @internal */
     int getNumTakes (bool includeComps) override;
     /** @internal */
-    juce::Array<ProjectItemID> getTakes() const override;
+    juce::Array<ProjectItemRef> getTakes() const override;
     /** @internal */
     void clearTakes() override;
     /** @internal */
@@ -108,7 +107,7 @@ public:
     Clip::Array unpackTakes (bool toNewTracks) override;
 
     /** @internal */
-    void reassignReferencedItem (const ReferencedItem&, ProjectItemID newID, double newStartTime) override;
+    void reassignReferencedItem (const ReferencedItem&, ProjectItemRef newRef, double newStartTime) override;
 
 private:
     //==============================================================================
@@ -131,4 +130,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveAudioClip)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

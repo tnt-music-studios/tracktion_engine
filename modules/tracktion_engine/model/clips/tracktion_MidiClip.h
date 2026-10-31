@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -32,8 +31,6 @@ public:
     MidiList& getSequence() const noexcept;
     MidiList& getSequenceLooped();
     std::unique_ptr<MidiList> createSequenceLooped (MidiList& sourceSequence);
-
-    const SelectedMidiEvents* getSelectedEvents() const             { return selectedEvents; }
 
     //==============================================================================
     /** Can be used to disable proxy sequence generation for this clip.
@@ -159,18 +156,6 @@ public:
     PatternGenerator* getPatternGenerator() override;
     void pitchTempoTrackChanged() override;
 
-    //==============================================================================
-    /** Temporarily limits the notes to use. */
-    struct ScopedEventsList
-    {
-        ScopedEventsList (MidiClip&, SelectedMidiEvents*);
-        ~ScopedEventsList();
-
-    private:
-        MidiClip& clip;
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScopedEventsList)
-    };
-
 protected:
     void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
     void valueTreeChildAdded (juce::ValueTree&, juce::ValueTree&) override;
@@ -197,13 +182,9 @@ private:
     juce::CachedValue<juce::String> grooveTemplate;
 
     bool shouldWarnAboutMultiChannel = false;
-    SelectedMidiEvents* selectedEvents = nullptr;
 
     mutable std::unique_ptr<MidiList> cachedLoopedSequence;
     MidiCompManager::Ptr midiCompManager;
-
-    //==============================================================================
-    void setSelectedEvents (SelectedMidiEvents* events)     { selectedEvents = events; }
 
     //==============================================================================
     MidiList* getMidiListForState (const juce::ValueTree&);
@@ -227,7 +208,7 @@ void mergeInMidiSequence (MidiClip&, juce::MidiMessageSequence, TimeDuration off
                           MidiList::NoteAutomationType);
 
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {

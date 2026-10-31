@@ -23,6 +23,18 @@ ARA_MAP_HOST_REF(AudioSourceWrapper, ARAAudioSourceHostRef)
     - 1 document per Edit
     - 1 musical context per edit
 */
+struct PersistentIDMapping
+{
+    juce::String archiveID;
+    juce::String currentID;
+};
+
+struct PersistentIDMappingGroup
+{
+    PersistentIDMapping sourceMapping;
+    juce::Array<PersistentIDMapping> modificationMappings;
+};
+
 class ARADocument
 {
 public:
@@ -30,12 +42,14 @@ public:
                  ARAInstance* validPluginWrapper,
                  const ARAPlugInExtensionInstance&,
                  const ARADocumentControllerInstance& dc,
-                 ARADocumentControllerHostInstance* dchi)
+                 ARADocumentControllerHostInstance* dchi,
+                 ArchivingState* archState)
       : edit (sourceEdit),
         dci (dc.documentControllerInterface),
         dcRef (dc.documentControllerRef),
         wrapper (validPluginWrapper),
-        hostInstance (dchi)
+        hostInstance (dchi),
+        archivingState (archState)
     {
         CRASH_TRACER
         jassert (wrapper != nullptr);
@@ -49,12 +63,16 @@ public:
         if (musicalContext != nullptr)
         {
             const ScopedEdit scope (*this, true);
+            audioSources.clear();
+            audioSourceRefCount.clear();
             regionSequences.clear();
             musicalContext = nullptr;
         }
 
-        dci->destroyDocumentController (dcRef);
+        // The spec requires bound plugin instances to be destroyed before the
+        // document controller they're bound to
         wrapper = nullptr;
+        dci->destroyDocumentController (dcRef);
     }
 
     bool canEdit (bool dontCheckMusicalContext) const
@@ -113,7 +131,16 @@ public:
             out.flush();
 
             if (data.getSize() > 0)
+            {
                 v.setProperty ("data", data.toBase64Encoding(), nullptr);
+
+                // Store the format ID the plugin used for this archive: if the plugin
+                // later changes its archive format, restore must report the ID the
+                // archive was saved with, not the factory's current one
+                if (wrapper != nullptr && wrapper->factory != nullptr)
+                    v.setProperty (IDs::araDocumentArchiveID,
+                                   juce::String::fromUTF8 (wrapper->factory->documentArchiveID), nullptr);
+            }
         }
     }
 
@@ -128,6 +155,29 @@ public:
         jassert (state.hasType (IDs::ARADOCUMENT));
 
         auto data = state.getProperty ("data").toString();
+        auto savedArchiveID = state.getProperty (IDs::araDocumentArchiveID).toString();
+
+        // Refuse archives whose format the plugin doesn't declare compatible -
+        // restoring foreign/incompatible data is undefined and some plugins abort
+        if (data.isNotEmpty() && savedArchiveID.isNotEmpty()
+             && wrapper != nullptr && wrapper->factory != nullptr)
+        {
+            const auto& f = *wrapper->factory;
+            bool compatible = (juce::String::fromUTF8 (f.documentArchiveID) == savedArchiveID);
+
+            for (ARASize i = 0; ! compatible && i < f.compatibleDocumentArchiveIDsCount; ++i)
+                if (f.compatibleDocumentArchiveIDs != nullptr
+                     && juce::String::fromUTF8 (f.compatibleDocumentArchiveIDs[i]) == savedArchiveID)
+                    compatible = true;
+
+            if (! compatible)
+            {
+                TRACKTION_LOG_ERROR ("ARA: not restoring document archive with incompatible ID '"
+                                     + savedArchiveID + "' (plug-in archive ID '"
+                                     + juce::String::fromUTF8 (f.documentArchiveID) + "')");
+                data = {};
+            }
+        }
 
         if (data.isNotEmpty())
         {
@@ -135,27 +185,153 @@ public:
 
             lastArchiveState = std::make_unique<juce::MemoryBlock>();
             lastArchiveState->fromBase64Encoding (data);
+            lastArchiveDocumentArchiveID = savedArchiveID;
         }
         else
         {
             lastArchiveState = nullptr;
+            lastArchiveDocumentArchiveID = {};
         }
     }
 
-    void endRestoringState()
+    void endRestoringState (juce::Array<PersistentIDMappingGroup> groups = {})
     {
         CRASH_TRACER
         TRACKTION_ASSERT_MESSAGE_THREAD
 
         if (lastArchiveState)
         {
-            dci->restoreObjectsFromArchive (dcRef, toHostRef (lastArchiveState.get()), nullptr);
+            // While restoring, getDocumentArchiveID must report the ID stored with
+            // the archive rather than the factory's current one
+            archivingState->documentArchiveIDOverride = lastArchiveDocumentArchiveID;
+
+            if (groups.isEmpty())
+            {
+                dci->restoreObjectsFromArchive (dcRef, toHostRef (lastArchiveState.get()), nullptr);
+            }
+            else
+            {
+                // Check if any groups share the same sourceMapping.currentID (collision)
+                bool hasCollisions = false;
+                {
+                    juce::StringArray seenCurrentIDs;
+
+                    for (auto& g : groups)
+                    {
+                        if (seenCurrentIDs.contains (g.sourceMapping.currentID))
+                        {
+                            hasCollisions = true;
+                            break;
+                        }
+
+                        seenCurrentIDs.add (g.sourceMapping.currentID);
+                    }
+                }
+
+                if (! hasCollisions)
+                {
+                    // Fast path: no collisions, flatten all groups into one call
+                    juce::Array<PersistentIDMapping> allSources, allMods;
+
+                    for (auto& g : groups)
+                    {
+                        allSources.add (g.sourceMapping);
+                        allMods.addArray (g.modificationMappings);
+                    }
+
+                    restoreWithFilter (allSources, allMods, kARATrue);
+                }
+                else
+                {
+                    // Collisions: multiple groups map to the same current source.
+                    // Re-restoring a source wipes its modifications (see
+                    // restoreObjectsForPaste which skips source mapping for
+                    // shared sources for the same reason).
+                    //
+                    // Strategy: for groups where archiveID != currentID (old-scheme
+                    // remapping), only include the source mapping on the FIRST
+                    // group per currentID. Subsequent groups with the same
+                    // currentID skip the source mapping so the source isn't
+                    // re-restored (which would wipe earlier modifications).
+                    // ARA finds archived modifications by persistent ID globally
+                    // when no source mapping scopes the search.
+                    //
+                    // Identity groups (archiveID == currentID) always include
+                    // their source mapping — these handle new-scheme archives
+                    // where the source ID already matches and won't collide
+                    // with old-scheme groups (old-scheme sources aren't in the
+                    // new archive, so those calls are no-ops).
+                    juce::StringArray restoredSourceIDs;
+                    bool isFirstCall = true;
+
+                    for (auto& g : groups)
+                    {
+                        juce::Array<PersistentIDMapping> sourceForThisCall;
+                        bool isIdentity = (g.sourceMapping.archiveID == g.sourceMapping.currentID);
+
+                        if (isIdentity || ! restoredSourceIDs.contains (g.sourceMapping.currentID))
+                        {
+                            sourceForThisCall.add (g.sourceMapping);
+
+                            if (! isIdentity)
+                                restoredSourceIDs.add (g.sourceMapping.currentID);
+                        }
+
+                        restoreWithFilter (sourceForThisCall, g.modificationMappings,
+                                           isFirstCall ? kARATrue : kARAFalse);
+                        isFirstCall = false;
+                    }
+                }
+            }
+
+            archivingState->documentArchiveIDOverride = {};
+            lastArchiveDocumentArchiveID = {};
             lastArchiveState = nullptr; // Make sure this is deleted before the call to endEditing or it won't get passed to the document
 
             endEditing (true);
         }
     }
 
+private:
+    void restoreWithFilter (const juce::Array<PersistentIDMapping>& sourceMappings,
+                            const juce::Array<PersistentIDMapping>& modificationMappings,
+                            ARABool documentData)
+    {
+        juce::Array<ARAPersistentID> srcArchiveIDs, srcCurrentIDs, modArchiveIDs, modCurrentIDs;
+
+        for (auto& m : sourceMappings)
+        {
+            srcArchiveIDs.add (m.archiveID.toRawUTF8());
+            srcCurrentIDs.add (m.currentID.toRawUTF8());
+        }
+
+        for (auto& m : modificationMappings)
+        {
+            modArchiveIDs.add (m.archiveID.toRawUTF8());
+            modCurrentIDs.add (m.currentID.toRawUTF8());
+        }
+
+        SizedStruct<ARA_STRUCT_MEMBER (ARARestoreObjectsFilter, audioModificationCurrentIDs)> filter {};
+        filter.documentData = documentData;
+
+        if (! sourceMappings.isEmpty())
+        {
+            filter.audioSourceIDsCount = static_cast<ARASize> (srcArchiveIDs.size());
+            filter.audioSourceArchiveIDs = srcArchiveIDs.getRawDataPointer();
+            filter.audioSourceCurrentIDs = srcCurrentIDs.getRawDataPointer();
+        }
+
+        if (! modificationMappings.isEmpty())
+        {
+            filter.audioModificationIDsCount = static_cast<ARASize> (modArchiveIDs.size());
+            filter.audioModificationArchiveIDs = modArchiveIDs.getRawDataPointer();
+            filter.audioModificationCurrentIDs = modCurrentIDs.getRawDataPointer();
+        }
+
+        dci->restoreObjectsFromArchive (dcRef, toHostRef (lastArchiveState.get()), &filter);
+    }
+
+public:
     /** Store a partial ARA archive containing just the given audio source and modification.
         Used by clipboard copy to capture ARA plugin edits (e.g. Melodyne note corrections).
     */
@@ -167,6 +343,9 @@ public:
         juce::MemoryBlock data;
         juce::MemoryOutputStream out (data, false);
 
+        // Flush pending plugin state changes before archiving
+        dci->notifyModelUpdates (dcRef);
+
         SizedStruct<ARA_STRUCT_MEMBER (ARAStoreObjectsFilter, audioModificationRefs)> filter {};
         filter.documentData = kARAFalse;
         filter.audioSourceRefsCount = 1;
@@ -177,6 +356,7 @@ public:
         dci->storeObjectsToArchive (dcRef, toHostRef (&out), &filter);
         out.flush();
 
+        T_ARA_DBG ("ARA storeObjectsForCopy: archived " << (int) data.getSize() << " bytes");
         return data;
     }
 
@@ -185,52 +365,135 @@ public:
     */
     void restoreObjectsForPaste (const juce::MemoryBlock& data,
                                  const juce::String& archivedSourceID, const juce::String& currentSourceID,
-                                 const juce::String& archivedModID, const juce::String& currentModID)
+                                 const juce::String& archivedModID, const juce::String& currentModID,
+                                 const juce::String& documentArchiveID = {})
     {
         CRASH_TRACER
         TRACKTION_ASSERT_MESSAGE_THREAD
 
+        T_ARA_DBG ("ARA restoreObjectsForPaste: dataSize=" << (int) data.getSize()
+             << " archivedSrcID=" << archivedSourceID
+             << " currentSrcID=" << currentSourceID
+             << " archivedModID=" << archivedModID
+             << " currentModID=" << currentModID
+             << " docArchiveID=" << documentArchiveID);
+
         if (data.getSize() == 0)
+        {
+            T_ARA_DBG ("ARA restoreObjectsForPaste: SKIPPED (empty data)");
             return;
+        }
+
+        // Don't hand archive data to the plug-in unless it declares the archive's format compatible.
+        // Restoring foreign/incompatible archive data (a cross-plug-in paste, or a corrupt project/
+        // clipboard) is undefined per the ARA spec - well-behaved plug-ins return false, but some abort.
+        // The host can cheaply reject obviously-incompatible data by matching the supplied
+        // documentArchiveID against the plug-in factory's own ID and its declared compatible IDs.
+        if (documentArchiveID.isNotEmpty() && wrapper != nullptr && wrapper->factory != nullptr)
+        {
+            const auto& f = *wrapper->factory;
+            bool compatible = (juce::String::fromUTF8 (f.documentArchiveID) == documentArchiveID);
+
+            for (ARASize i = 0; ! compatible && i < f.compatibleDocumentArchiveIDsCount; ++i)
+                if (f.compatibleDocumentArchiveIDs != nullptr
+                     && juce::String::fromUTF8 (f.compatibleDocumentArchiveIDs[i]) == documentArchiveID)
+                    compatible = true;
+
+            if (! compatible)
+            {
+                TRACKTION_LOG_ERROR ("ARA restoreObjectsForPaste: refusing archive with incompatible "
+                                     "documentArchiveID '" + documentArchiveID + "' (plug-in archive ID '"
+                                     + juce::String::fromUTF8 (f.documentArchiveID) + "')");
+                return;
+            }
+        }
 
         juce::MemoryBlock dataCopy (data);
+
+        // Flush so the plugin acknowledges the newly created modification before restoring into it
+        dci->notifyModelUpdates (dcRef);
 
         SizedStruct<ARA_STRUCT_MEMBER (ARARestoreObjectsFilter, audioModificationCurrentIDs)> filter {};
         filter.documentData = kARAFalse;
 
         ARAPersistentID srcArchiveID = archivedSourceID.toRawUTF8();
         ARAPersistentID srcCurrentID = currentSourceID.toRawUTF8();
-        filter.audioSourceIDsCount = 1;
-        filter.audioSourceArchiveIDs = &srcArchiveID;
-        filter.audioSourceCurrentIDs = &srcCurrentID;
+
+        auto isShared = [&]
+        {
+            auto it = audioSourceRefCount.find (currentSourceID);
+            return it != audioSourceRefCount.end() && it->second > 1;
+        };
+
+        // If we don't skip the sourceID assignment when pasting to the same document,
+        // it seems like the original Melodyne source will get its modifications wiped
+        if (archivedSourceID != currentSourceID
+            || ! isShared())
+        {
+            filter.audioSourceIDsCount = 1;
+            filter.audioSourceArchiveIDs = &srcArchiveID;
+            filter.audioSourceCurrentIDs = &srcCurrentID;
+        }
 
         ARAPersistentID modArchiveID = archivedModID.toRawUTF8();
         ARAPersistentID modCurrentID = currentModID.toRawUTF8();
-        filter.audioModificationIDsCount = 1;
-        filter.audioModificationArchiveIDs = &modArchiveID;
-        filter.audioModificationCurrentIDs = &modCurrentID;
+
+        if (archivedModID.isNotEmpty())
+        {
+            filter.audioModificationIDsCount = 1;
+            filter.audioModificationArchiveIDs = &modArchiveID;
+            filter.audioModificationCurrentIDs = &modCurrentID;
+        }
 
         beginEditing (true);
-        dci->restoreObjectsFromArchive (dcRef, toHostRef (&dataCopy), &filter);
+        archivingState->documentArchiveIDOverride = documentArchiveID;
+        auto restoreResult = dci->restoreObjectsFromArchive (dcRef, toHostRef (&dataCopy), &filter);
+        T_ARA_DBG ("ARA restoreObjectsFromArchive returned: " << (restoreResult ? "TRUE" : "FALSE"));
+        juce::ignoreUnused (restoreResult);
+        archivingState->documentArchiveIDOverride = {};
         endEditing (true);
     }
 
     void willCreatePlaybackRegionOnTrack (Track* track)
     {
-        if (regionSequences.count (track) == 0)
-            regionSequences[track] = std::make_unique<RegionSequenceWrapper> (*this, track);
+        auto id = track->itemID;
 
-        regionSequencePlaybackRegionCount[track]++;
+        if (regionSequences.count (id) == 0)
+            regionSequences[id] = std::make_unique<RegionSequenceWrapper> (*this, track);
+
+        regionSequencePlaybackRegionCount[id]++;
     }
 
-    void willDestroyPlaybackRegionOnTrack (Track* track)
+    void willDestroyPlaybackRegionOnTrack (EditItemID trackID)
     {
-        jassert (regionSequencePlaybackRegionCount.count (track) > 0);
+        jassert (regionSequencePlaybackRegionCount.count (trackID) > 0);
 
-        if (--regionSequencePlaybackRegionCount[track] == 0)
+        if (--regionSequencePlaybackRegionCount[trackID] == 0)
         {
-            regionSequences.erase (track);
-            regionSequencePlaybackRegionCount.erase (track);
+            regionSequences.erase (trackID);
+            regionSequencePlaybackRegionCount.erase (trackID);
+        }
+    }
+
+    std::shared_ptr<AudioSourceWrapper> acquireAudioSource (AudioClipBase& audioClip)
+    {
+        auto key = audioClip.getAudioFile().getHashString();
+
+        if (audioSources.count (key) == 0)
+            audioSources[key] = std::make_shared<AudioSourceWrapper> (*this, audioClip);
+
+        audioSourceRefCount[key]++;
+        return audioSources[key];
+    }
+
+    void releaseAudioSource (const juce::String& key)
+    {
+        jassert (audioSourceRefCount.count (key) > 0);
+
+        if (--audioSourceRefCount[key] == 0)
+        {
+            audioSources.erase (key);
+            audioSourceRefCount.erase (key);
         }
     }
 
@@ -238,13 +501,73 @@ public:
     const ARADocumentControllerInterface* dci;
     ARADocumentControllerRef dcRef;
     std::unique_ptr<MusicalContextWrapper> musicalContext;
-    std::map<Track*, std::unique_ptr<RegionSequenceWrapper>> regionSequences;
-    std::map<Track*, int> regionSequencePlaybackRegionCount;
+    std::map<EditItemID, std::unique_ptr<RegionSequenceWrapper>> regionSequences;
+    std::map<EditItemID, int> regionSequencePlaybackRegionCount;
+    std::map<juce::String, std::shared_ptr<AudioSourceWrapper>> audioSources;
+    std::map<juce::String, int> audioSourceRefCount;
     std::unique_ptr<juce::MemoryBlock> lastArchiveState;
+    juce::String lastArchiveDocumentArchiveID;
+
+    //==============================================================================
+    /** RAII registration of an editor view bound to this document - a clip
+        player's instance or an additional binding like the plugin panel's browser
+        instance - for selection fan-out (see ARAClipPlayer::setViewSelection).
+        Registers on construction and removes itself on destruction; the document
+        must outlive the registration (clip players and plugin bindings are torn
+        down before the Edit's ARADocumentHolder). */
+    class ScopedEditorView
+    {
+    public:
+        ScopedEditorView (ARADocument& d, const ARAPlugInExtensionInstance& e, ExternalPlugin& p)
+            : extension (e), plugin (p), doc (d)
+        {
+            doc.editorViews.push_back (this);
+        }
+
+        ~ScopedEditorView()
+        {
+            auto& views = doc.editorViews;
+            views.erase (std::remove (views.begin(), views.end(), this), views.end());
+        }
+
+        const ARAPlugInExtensionInstance& extension;
+        ExternalPlugin& plugin;
+
+    private:
+        ARADocument& doc;
+
+        JUCE_DECLARE_NON_COPYABLE (ScopedEditorView)
+    };
+
+    /** Calls the given function for every registered editor view. */
+    void visitEditorViews (const std::function<void (const ARAPlugInExtensionInstance&, ExternalPlugin&)>& fn) const
+    {
+        for (auto v : editorViews)
+            fn (v->extension, v->plugin);
+    }
+
+    //==============================================================================
+    /** Notifies the plugin that the edit's tempo/key/chord content has changed so
+        the musical context is re-read. Driven at document level
+        (Edit::sendTempoOrPitchSequenceChangedUpdates → ARADocumentHolder) so it
+        also works when no ARA clips exist to forward the change, e.g. a
+        browser/panel-only instance (QA 16550). */
+    void musicalContextContentChanged()
+    {
+        if (musicalContext != nullptr)
+        {
+            const ScopedEdit scope (*this, true);
+            musicalContext->update (kARAContentUpdateSignalScopeRemainsUnchanged
+                                     | kARAContentUpdateNoteScopeRemainsUnchanged
+                                     | kARAContentUpdateTuningScopeRemainsUnchanged);
+        }
+    }
 
 private:
     std::unique_ptr<ARAInstance> wrapper;
     std::unique_ptr<ARADocumentControllerHostInstance> hostInstance;
+    std::unique_ptr<ArchivingState> archivingState;
+    std::vector<const ScopedEditorView*> editorViews;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ARADocument)
 };
@@ -330,11 +653,12 @@ static ARADocument* createDocumentInternal (Edit& edit, const juce::PluginDescri
             &MusicalContextWrapper::destroyContentReader
         };
 
-        static const SizedStruct<ARA_STRUCT_MEMBER (ARAModelUpdateControllerInterface, notifyAudioModificationContentChanged)>  modelUpdating =
+        static const SizedStruct<ARA_STRUCT_MEMBER (ARAModelUpdateControllerInterface, notifyPlaybackRegionContentChanged)>  modelUpdating =
         {
             &ModelUpdateFunctions::notifyAudioSourceAnalysisProgress,
             &ModelUpdateFunctions::notifyAudioSourceContentChanged,
-            &ModelUpdateFunctions::notifyAudioModificationContentChanged
+            &ModelUpdateFunctions::notifyAudioModificationContentChanged,
+            &ModelUpdateFunctions::notifyPlaybackRegionContentChanged
         };
 
         static const SizedStruct<ARA_STRUCT_MEMBER (ARAPlaybackControllerInterface, requestEnableCycle)>  playback =
@@ -348,9 +672,13 @@ static ARADocument* createDocumentInternal (Edit& edit, const juce::PluginDescri
 
         //NB: Can't be a stack object since it doesn't get copied when passed into the document instance!
         std::unique_ptr<ARADocumentControllerHostInstance> hostInstance (new SizedStruct<ARA_STRUCT_MEMBER (ARADocumentControllerHostInstance, playbackControllerInterface)>());
+
+        auto archivingState = std::make_unique<ArchivingState>();
+        archivingState->factory = factory;
+
         hostInstance->audioAccessControllerHostRef      = nullptr;
         hostInstance->audioAccessControllerInterface    = &audioAccess;
-        hostInstance->archivingControllerHostRef        = (ARAArchivingControllerHostRef) factory;
+        hostInstance->archivingControllerHostRef        = (ARAArchivingControllerHostRef) archivingState.get();
         hostInstance->archivingControllerInterface      = &hostArchiving;
         hostInstance->contentAccessControllerHostRef    = toHostRef (&edit);
         hostInstance->contentAccessControllerInterface  = &content;
@@ -359,7 +687,7 @@ static ARADocument* createDocumentInternal (Edit& edit, const juce::PluginDescri
         hostInstance->playbackControllerHostRef         = toHostRef (&edit.getTransport());
         hostInstance->playbackControllerInterface       = &playback;
 
-        auto name = edit.getProjectItemID().toString().trim();
+        auto name = edit.getProjectItemRef().toString().trim();
 
         if (name.isEmpty()) name = edit.getName().trim();
         if (name.isEmpty()) name = getEditFileFromProjectManager (edit).getFullPathName().trim();
@@ -374,10 +702,14 @@ static ARADocument* createDocumentInternal (Edit& edit, const juce::PluginDescri
             if (auto wrapper = std::unique_ptr<ARAInstance> (pluginFactory.createInstance (*plugin, dci->documentControllerRef)))
             {
                 auto d = new ARADocument (edit, wrapper.get(), *wrapper->extensionInstance,
-                                          *dci, hostInstance.release());
+                                          *dci, hostInstance.release(), archivingState.release());
                 wrapper.release();
                 return d;
             }
+
+            // Binding failed: the document controller must be destroyed, or it leaks
+            // holding a pointer to the host instance we're about to free
+            dci->documentControllerInterface->destroyDocumentController (dci->documentControllerRef);
         }
     }
 
@@ -417,14 +749,29 @@ public:
             document.dci->destroyMusicalContext (document.dcRef, musicalContextRef);
     }
 
-    void update()
+    void update (ARAContentUpdateFlags flags = kARAContentUpdateEverythingChanged)
     {
         CRASH_TRACER
         TRACKTION_ASSERT_MESSAGE_THREAD
 
+        // While restoring an archive, beginEditing/endEditing are no-ops, so sending
+        // a content update here would land outside an editing cycle
+        if (! document.canEdit (true))
+            return;
+
         if (document.dci != nullptr && musicalContextRef != nullptr)
             document.dci->updateMusicalContextContent (document.dcRef, musicalContextRef,
-                                                       nullptr, kARAContentUpdateEverythingChanged);
+                                                       nullptr, flags);
+    }
+
+    /** Converts an edit beat position to ARA quarter notes.
+        NB: a tracktion beat is the time-signature denominator note, which is only a
+        quarter note in x/4 signatures - ARA positions must always be in quarters. */
+    static ARAQuarterPosition beatsToQuarters (Edit& ed, BeatPosition beat)
+    {
+        tempo::Sequence::Position pos (ed.tempoSequence.getInternalSequence());
+        pos.set (ed.tempoSequence.toTime (beat));
+        return pos.getPPQTime();
     }
 
     SizedStruct<ARA_STRUCT_MEMBER (ARAMusicalContextProperties, color)> getMusicalContextProperties()
@@ -540,6 +887,22 @@ private:
         virtual const void* getDataForEvent (int index) const = 0;
     };
 
+    /** Removes entries whose position doesn't strictly increase over the previous
+        entry, keeping the later entry. Plug-ins validate that content events are
+        strictly ordered and can assert or abort on duplicates, which zero-length
+        progression items or rounding after tempo changes can otherwise produce. */
+    template <typename ContentType, typename GetPosition>
+    static void removeNonIncreasingPositions (juce::Array<ContentType>& items, GetPosition&& getPosition)
+    {
+        for (int i = 1; i < items.size();)
+        {
+            if (getPosition (items.getReference (i)) <= getPosition (items.getReference (i - 1)))
+                items.remove (i - 1);
+            else
+                ++i;
+        }
+    }
+
     template <typename ContentType>
     struct TimeEventReaderHelper : public TimeEventReaderBase
     {
@@ -591,9 +954,12 @@ private:
             for (int t = beginTimeSig; t < endTimeSig; t++)
             {
                 auto timeSig = ed.tempoSequence.getTimeSig (t);
-                ARAContentBarSignature item = { timeSig->numerator, timeSig->denominator, (ARAQuarterPosition)timeSig->getStartBeat().inBeats() };
+                ARAContentBarSignature item = { timeSig->numerator, timeSig->denominator,
+                                                beatsToQuarters (ed, timeSig->getStartBeat()) };
                 items.add (item);
             }
+
+            removeNonIncreasingPositions (items, [] (const ARAContentBarSignature& i) { return i.position; });
         }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TimeSigReader)
@@ -609,9 +975,9 @@ private:
             tempo::Sequence::Position tempoPosition (ed.tempoSequence.getInternalSequence());
             tempoPosition.set (range ? TimePosition::fromSeconds (range->start) : 0_tp);
 
-            // Add first item
+            // Add first item. NB: ARA positions are quarter notes, not tracktion beats
             {
-                ARAContentTempoEntry item = { tempoPosition.getTime().inSeconds(), tempoPosition.getBeats().inBeats() };
+                ARAContentTempoEntry item = { tempoPosition.getTime().inSeconds(), tempoPosition.getPPQTime() };
                 items.add (item);
             }
 
@@ -626,7 +992,7 @@ private:
 
                 const auto time = tempoPosition.getTime();
 
-                ARAContentTempoEntry item = { time.inSeconds(), tempoPosition.getBeats().inBeats() };
+                ARAContentTempoEntry item = { time.inSeconds(), tempoPosition.getPPQTime() };
                 items.add (item);
 
                 if (range && time >= TimePosition::fromSeconds (range->start + range->duration))
@@ -634,7 +1000,9 @@ private:
             }
 
             // if the last tempo setting is included, extrapolate a new entry
-            // so that plug-ins can calculate tempo at the range boundary
+            // so that plug-ins can calculate tempo at the range boundary.
+            // The stored bpm is quarter notes per minute, so extending by one
+            // minute advances the quarter position by exactly the bpm
             if (foundLastTempo)
             {
                 auto extrapolatedTempoEntry = items.getLast();
@@ -642,6 +1010,8 @@ private:
                 extrapolatedTempoEntry.quarterPosition += ed.tempoSequence.getBpmAt (TimePosition::fromSeconds (items.getLast().timePosition));
                 items.add (extrapolatedTempoEntry);
             }
+
+            removeNonIncreasingPositions (items, [] (const ARAContentTempoEntry& i) { return i.quarterPosition; });
         }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TempoReader)
@@ -662,81 +1032,82 @@ private:
                                         : BeatPosition();
             auto rangeEndBeat = range ? ed.tempoSequence.toBeats (TimePosition::fromSeconds (range->start + range->duration))
                                       : BeatPosition::fromBeats (std::numeric_limits<float>::max());
-            auto endBeatOfPreviousClip = rangeStartBeat;
 
-            // construct a "no chord" for representing gaps in the chord track
+            // construct a "no chord" for representing gaps in the chord track.
+            // All intervals unused marks it as undefined; the name must be left
+            // null as it's "the name as displayed in the host", and we don't show one
             ARAContentChord noChord{};
-            noChord.name = chordNames.insert ("NoChord").first->toRawUTF8();
 
-            double lastEmittedPosition = -std::numeric_limits<double>::max();
+            // Flatten the whole chord track into a single Edit-time progression.
+            // This repeats each clip's progression across its full length and
+            // resolves gaps/overlaps exactly as chord-track playback does, so a
+            // looped/repeated progression is reported in full rather than just
+            // the first pass of each clip's pattern.
+            auto ptnGen = chordTrack->getClips().getFirst()->getPatternGenerator();
+            jassert (ptnGen);
 
-            for (auto chordClip : chordTrack->getClips())
+            juce::OwnedArray<PatternGenerator::ProgressionItem> progression;
+            ptnGen->getFlattenedChordProgression (progression, true);
+
+            BeatPosition itemStartBeat;
+
+            for (auto itm : progression)
             {
-                auto chordStartBeat = chordClip->getStartBeat();
-                auto chordEndBeat = chordClip->getEndBeat();
+                auto itemEndBeat = itemStartBeat + itm->lengthInBeats;
+                auto thisItemStart = itemStartBeat;
+                itemStartBeat = itemEndBeat;
 
-                if (range == nullptr || (chordStartBeat < rangeEndBeat && rangeStartBeat < chordEndBeat))
+                // skip items that don't intersect the requested range
+                if (range != nullptr && (itemEndBeat <= rangeStartBeat || thisItemStart >= rangeEndBeat))
+                    continue;
+
+                auto position = beatsToQuarters (ed, thisItemStart);
+
+                // an empty chord name marks a gap in the chord track ("no chord")
+                if (itm->chordName.get().isEmpty())
                 {
-                    // insert a no chord between gaps in chord clips
-                    if (endBeatOfPreviousClip < chordStartBeat)
-                    {
-                        auto gapPosition = endBeatOfPreviousClip.inBeats();
-
-                        if (gapPosition > lastEmittedPosition)
-                        {
-                            ARAContentChord noChordCopy = noChord;
-                            noChordCopy.position = gapPosition;
-                            items.add (noChordCopy);
-                            lastEmittedPosition = gapPosition;
-                        }
-                    }
-
-                    endBeatOfPreviousClip = juce::jmax (endBeatOfPreviousClip, chordEndBeat);
-                    BeatPosition patternBeat;
-                    auto ptnGen = chordClip->getPatternGenerator();
-                    jassert (ptnGen);
-
-                    for (auto itm : ptnGen->getChordProgression())
-                    {
-                        auto timelineBeat = patternBeat + toDuration (chordStartBeat);
-                        auto position = timelineBeat.inBeats();
-
-                        if (position > lastEmittedPosition)
-                        {
-                            ARAContentChord item{};
-
-                            bool sharp = ed.pitchSequence.getPitchAtBeat (timelineBeat).accidentalsSharp;
-                            Scale scale = ptnGen->getScaleAtBeat (patternBeat);
-                            int rootNote = itm->getRootNote (ptnGen->getNoteAtBeat (patternBeat), scale);
-                            item.root = MusicalContextFunctions::getCircleOfFifthsIndexforMIDINote (rootNote, sharp);
-                            item.bass = item.root;
-
-                            auto chordIntervals = MusicalContextFunctions::getChordARAIntervalUsage (itm->getChord (scale));
-                            memcpy (item.intervals, chordIntervals.data(), sizeof (item.intervals));
-
-                            item.name = chordNames.insert (itm->getChordSymbol()).first->toRawUTF8();
-
-                            item.position = position;
-                            items.add (item);
-                            lastEmittedPosition = position;
-                        }
-
-                        patternBeat = patternBeat + itm->lengthInBeats;
-                    }
+                    ARAContentChord noChordCopy = noChord;
+                    noChordCopy.position = position;
+                    items.add (noChordCopy);
+                    continue;
                 }
+
+                ARAContentChord item{};
+
+                // The flattened items are detached copies, so resolve the key/scale
+                // from the Edit's pitch sequence at the item's Edit-time position
+                // (matching how chord-track playback computes them).
+                auto& pitch = ed.pitchSequence.getPitchAtBeat (thisItemStart);
+                bool sharp = pitch.accidentalsSharp;
+                Scale scale (pitch.getScale());
+                int rootNote = itm->getRootNote (pitch.getPitch() % 12, scale);
+                Chord chord = itm->getChord (scale);
+                item.root = MusicalContextFunctions::getCircleOfFifthsIndexforMIDINote (rootNote, sharp);
+
+                // The bass is the lowest note of the chord in its current inversion
+                auto invertedSteps = chord.getSteps (itm->inversion);
+                auto bassNote = rootNote + (invertedSteps.isEmpty() ? 0 : invertedSteps.getFirst());
+                item.bass = MusicalContextFunctions::getCircleOfFifthsIndexforMIDINote (((bassNote % 12) + 12) % 12, sharp);
+
+                auto chordIntervals = MusicalContextFunctions::getChordARAIntervalUsage (chord);
+                memcpy (item.intervals, chordIntervals.data(), sizeof (item.intervals));
+
+                auto symbol = juce::MidiMessage::getMidiNoteName (rootNote, sharp, false, 0) + chord.getSymbol();
+                item.name = chordNames.insert (MusicalContextFunctions::convertAccidentalsToUnicode (symbol)).first->toRawUTF8();
+
+                item.position = position;
+                items.add (item);
             }
 
-            // if the range is null or goes beyond the last chord clip,
-            // add the no chord here
-            if (items.isEmpty() || endBeatOfPreviousClip < rangeEndBeat)
-            {
-                auto trailPosition = endBeatOfPreviousClip.inBeats();
+            // Zero-length progression items produce two chords at the same position,
+            // which ARA plugins reject - keep the later (audible) one
+            removeNonIncreasingPositions (items, [] (const ARAContentChord& i) { return i.position; });
 
-                if (items.isEmpty() || trailPosition > lastEmittedPosition)
-                {
-                    noChord.position = trailPosition;
-                    items.add (noChord);
-                }
+            // make sure there is always at least a trailing "no chord"
+            if (items.isEmpty())
+            {
+                noChord.position = beatsToQuarters (ed, rangeStartBeat);
+                items.add (noChord);
             }
         }
 
@@ -784,11 +1155,13 @@ private:
                                                                      pitchSetting->accidentalsSharp, false, 0)
                                     + " " + scale.getName();
 
-                item.name = scaleNames.insert (scaleName).first->toRawUTF8();
+                item.name = scaleNames.insert (MusicalContextFunctions::convertAccidentalsToUnicode (scaleName)).first->toRawUTF8();
 
-                item.position = pitchSetting->getStartBeatNumber().inBeats();
+                item.position = beatsToQuarters (ed, pitchSetting->getStartBeatNumber());
                 items.add (item);
             }
+
+            removeNonIncreasingPositions (items, [] (const ARAContentKeySignature& i) { return i.position; });
         }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KeySignatureReader)
@@ -804,8 +1177,9 @@ private:
 class NodeReader
 {
 public:
-    NodeReader (const AudioFile& af)
-        : reader (af.engine->getAudioFileManager().cache.createReader (af))
+    NodeReader (const AudioFile& af, bool use64BitSamplesIn)
+        : reader (af.engine->getAudioFileManager().cache.createReader (af)),
+          use64BitSamples (use64BitSamplesIn)
     {
         if (reader != nullptr)
             buffer.setSize (reader->getNumChannels(), 8096, false, true, true);
@@ -827,13 +1201,29 @@ public:
         buffer.clear();
 
         reader->setReadPosition (samplePosition);
-        reader->readSamples (numSamples, buffer, juce::AudioChannelSet::stereo(),
-                             0, juce::AudioChannelSet::stereo(), 5000);
+        const auto channels = ChannelConfiguration::canonical (numChans);
+
+        // If the read fails, the cleared buffer is still copied out below, which
+        // satisfies ARA's requirement that failed reads fill the buffers with silence
+        const bool ok = reader->readSamples (numSamples, buffer, channels, 0, channels, 5000);
 
         for (int i = 0; i < numChans; ++i)
-            juce::FloatVectorOperations::copy ((float*) buffers[i], buffer.getReadPointer (i), numSamples);
+        {
+            if (use64BitSamples)
+            {
+                auto src = buffer.getReadPointer (i);
+                auto dst = (double*) buffers[i];
 
-        return kARATrue;
+                for (int j = 0; j < numSamples; ++j)
+                    dst[j] = src[j];
+            }
+            else
+            {
+                juce::FloatVectorOperations::copy ((float*) buffers[i], buffer.getReadPointer (i), numSamples);
+            }
+        }
+
+        return ok ? kARATrue : kARAFalse;
     }
 
     double getSampleRate() const       { return reader != nullptr ? reader->getSampleRate() : 0.0; }
@@ -842,6 +1232,7 @@ public:
 private:
     AudioFileCache::Reader::Ptr reader;
     juce::AudioBuffer<float> buffer;
+    const bool use64BitSamples;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NodeReader)
 };
@@ -852,14 +1243,28 @@ class AudioSourceWrapper
 public:
     AudioSourceWrapper (ARADocument& d, AudioClipBase& audioClip)
       : doc (d),
-        clip (audioClip),
-        itemID (audioClip.getAudioFile().getHashString() + "_" + audioClip.itemID.toString())
+        audioFile (audioClip.getAudioFile()),
+        sourceID (audioClip.getAudioFile().getHashString())
     {
         CRASH_TRACER
         TRACKTION_ASSERT_MESSAGE_THREAD
 
+        // The cached file info can be stale or missing at this point (e.g. a freshly
+        // unpacked project archive) - re-parse it rather than describing the source
+        // to the plugin with a zero sample rate, which is invalid per the ARA spec
+        if (audioFile.getInfo().sampleRate <= 0.0)
+            audioFile.engine->getAudioFileManager().forceFileUpdate (audioFile);
+
         updateAudioSourceProperties();
         auto audioSourceProperties = getAudioSourceProperties();
+
+        if (audioSourceProperties.sampleRate <= 0.0 || audioSourceProperties.sampleCount <= 0)
+        {
+            TRACKTION_LOG_ERROR ("ARA: not creating an audio source for an unreadable file: "
+                                 + audioFile.getFile().getFullPathName());
+            return;
+        }
+
         audioSourceRef = doc.dci->createAudioSource (doc.dcRef, toHostRef (this), &audioSourceProperties);
     }
 
@@ -875,11 +1280,11 @@ public:
         }
     }
 
-    NodeReader* createReader()
+    NodeReader* createReader (bool use64BitSamples = false)
     {
         CRASH_TRACER
         TRACKTION_ASSERT_MESSAGE_THREAD
-        return new NodeReader (clip.getAudioFile());
+        return new NodeReader (audioFile, use64BitSamples);
     }
 
     void enableAccess (bool b)
@@ -888,15 +1293,34 @@ public:
             doc.dci->enableAudioSourceSamplesAccess (doc.dcRef, audioSourceRef, b ? kARATrue : kARAFalse);
     }
 
+    void acquireAccess()
+    {
+        if (++accessRefCount == 1)
+            enableAccess (true);
+    }
+
+    void releaseAccess()
+    {
+        // Defensive: an unbalanced release must not disable access for other
+        // clips sharing this source
+        jassert (accessRefCount > 0);
+
+        if (accessRefCount == 0)
+            return;
+
+        if (--accessRefCount == 0)
+            enableAccess (false);
+    }
+
     //==============================================================================
     static ARAAudioReaderHostRef ARA_CALL createAudioReaderForSource (ARAAudioAccessControllerHostRef,
                                                                       ARAAudioSourceHostRef hostAudioSourceRef,
-                                                                      ARABool)
+                                                                      ARABool use64BitSamples)
     {
         CRASH_TRACER
 
         if (auto source = fromHostRef (hostAudioSourceRef))
-            return (ARAAudioReaderHostRef) source->createReader();
+            return (ARAAudioReaderHostRef) source->createReader (use64BitSamples != kARAFalse);
 
         return {};
     }
@@ -925,27 +1349,33 @@ public:
         return
         {
             name.toRawUTF8(),
-            itemID.toRawUTF8(),
-            (ARASampleCount)clip.getAudioFile().getLengthInSamples(),
+            sourceID.toRawUTF8(),
+            (ARASampleCount)audioFile.getLengthInSamples(),
             (ARASampleRate)(reader != nullptr ? reader->getSampleRate() : 0.0),
             (ARAChannelCount)(reader != nullptr ? reader->getNumChannels() : 0),
             kARAFalse //merits64BitSamples
         };
     }
 
+    const juce::String& getPersistentID() const { return sourceID; }
+
     //==============================================================================
     ARADocument& doc;
-    AudioClipBase& clip;
+
+    // NB: this wrapper is shared between all clips using the same file, so it must not
+    // refer back to the (possibly deleted) clip that created it - take a copy of the file
+    const AudioFile audioFile;
     ARAAudioSourceRef audioSourceRef = {};
 
 private:
     void updateAudioSourceProperties()
     {
-        name = clip.getAudioFile().getFile().getFileName();
+        name = audioFile.getFile().getFileName();
     }
 
-    const juce::String itemID;
+    const juce::String sourceID;
     juce::String name;
+    int accessRefCount = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioSourceWrapper)
 };
@@ -989,6 +1419,8 @@ public:
         };
     }
 
+    const juce::String& getPersistentID() const { return persistentID; }
+
     ARADocument& doc;
     AudioSourceWrapper& audioSource;
     ARAAudioModificationRef audioModificationRef = nullptr;
@@ -1001,7 +1433,7 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioModificationWrapper)
 };
 
-class RegionSequenceWrapper
+class RegionSequenceWrapper  : private SelectableListener
 {
 public:
     RegionSequenceWrapper (ARADocument& d, Track* t) : doc (d), track (t)
@@ -1012,10 +1444,16 @@ public:
         updateRegionSequenceProperties();
         auto regionSequenceProperties = getRegionSequenceProperties();
         regionSequenceRef = doc.dci->createRegionSequence (doc.dcRef, toHostRef (&doc.edit), &regionSequenceProperties);
+
+        // A track rename/recolour with no accompanying clip change must still
+        // reach the plugin, so watch the track itself
+        resetSelectableListener (trackListener, track, *this);
     }
 
     ~RegionSequenceWrapper()
     {
+        trackListener.reset();
+
         if (regionSequenceRef != nullptr)
             doc.dci->destroyRegionSequence (doc.dcRef, regionSequenceRef);
     }
@@ -1031,11 +1469,55 @@ public:
         };
     }
 
+    /** Re-sends the track name/order/colour to the plugin.
+        Must be called from within a document editing cycle. */
+    void updateProperties()
+    {
+        // The track can be deleted while sibling playback regions are still alive and
+        // calling in here, so this must be guarded like selectableObjectChanged is
+        if (track != nullptr && regionSequenceRef != nullptr)
+        {
+            updateRegionSequenceProperties();
+            auto props = getRegionSequenceProperties();
+            doc.dci->updateRegionSequenceProperties (doc.dcRef, regionSequenceRef, &props);
+        }
+    }
+
     ARARegionSequenceRef regionSequenceRef = nullptr;
     ARADocument& doc;
     Track* track;
 
 private:
+    void selectableObjectChanged (Selectable*) override
+    {
+        // Selectable changes arrive asynchronously on the message thread, so it's
+        // safe to open an editing cycle here. Tracks change for many reasons besides
+        // the properties a region sequence mirrors, so skip no-op notifications.
+        if (track == nullptr || regionSequenceRef == nullptr)
+            return;
+
+        auto trackColour = track->getColour();
+        const ARAColor newColour { trackColour.getFloatRed(), trackColour.getFloatGreen(), trackColour.getFloatBlue() };
+
+        if (name == track->getName()
+             && orderIndex == track->getIndexInEditTrackList()
+             && colour.r == newColour.r && colour.g == newColour.g && colour.b == newColour.b)
+            return;
+
+        if (doc.canEdit (false))
+        {
+            const ARADocument::ScopedEdit scope (doc, false);
+            updateProperties();
+        }
+    }
+
+    void selectableObjectAboutToBeDeleted (Selectable*) override
+    {
+        // track is read as data elsewhere in this class, so it must still be nulled
+        // here; trackListener unregisters itself when the track goes away
+        track = nullptr;
+    }
+
     void updateRegionSequenceProperties()
     {
         name = track->getName();
@@ -1044,6 +1526,7 @@ private:
         colour = { trackColour.getFloatRed(), trackColour.getFloatGreen(), trackColour.getFloatBlue() };
     }
 
+    SafeScopedListener trackListener;
     int orderIndex;
     juce::String name;
     ARAColor colour;
@@ -1055,13 +1538,16 @@ private:
 class PlaybackRegionWrapper
 {
 public:
+    /** Creates a playback region covering the whole clip (non-looping case). */
     PlaybackRegionWrapper (ARADocument& d,
                            AudioClipBase& audioClip,
                            const ARAFactory& factory,
                            const AudioModificationWrapper& audioModification)
       : doc (d),
         clip (audioClip),
-        flags (factory.supportedPlaybackTransformationFlags)
+        trackID (audioClip.getTrack()->itemID),
+        supportedFlags (factory.supportedPlaybackTransformationFlags),
+        audioModificationRef (audioModification.audioModificationRef)
     {
         CRASH_TRACER
         TRACKTION_ASSERT_MESSAGE_THREAD
@@ -1072,7 +1558,37 @@ public:
         updatePlaybackRegionProperties();
         auto playbackRegionProperties = getPlaybackRegionProperties();
         playbackRegionRef = doc.dci->createPlaybackRegion (doc.dcRef,
-                                                           audioModification.audioModificationRef,
+                                                           audioModificationRef,
+                                                           toHostRef (&doc.edit),
+                                                           &playbackRegionProperties);
+    }
+
+    /** Creates a playback region for one loop iteration of a looping clip.
+        The time ranges are recomputed from the current clip state whenever the
+        properties are requested, so they stay correct as the clip is moved or resized. */
+    PlaybackRegionWrapper (ARADocument& d,
+                           AudioClipBase& audioClip,
+                           const ARAFactory& factory,
+                           const AudioModificationWrapper& audioModification,
+                           int loopIterationIndex)
+      : doc (d),
+        clip (audioClip),
+        trackID (audioClip.getTrack()->itemID),
+        supportedFlags (factory.supportedPlaybackTransformationFlags),
+        audioModificationRef (audioModification.audioModificationRef),
+        isLoopIteration (true),
+        loopIteration (loopIterationIndex)
+    {
+        CRASH_TRACER
+        TRACKTION_ASSERT_MESSAGE_THREAD
+
+        doc.willCreatePlaybackRegionOnTrack (clip.getTrack());
+
+        jassert (d.musicalContext != nullptr && d.musicalContext->musicalContextRef != nullptr);
+        updatePlaybackRegionProperties();
+        auto playbackRegionProperties = getPlaybackRegionProperties();
+        playbackRegionRef = doc.dci->createPlaybackRegion (doc.dcRef,
+                                                           audioModificationRef,
                                                            toHostRef (&doc.edit),
                                                            &playbackRegionProperties);
     }
@@ -1084,7 +1600,7 @@ public:
             CRASH_TRACER
             TRACKTION_ASSERT_MESSAGE_THREAD
             doc.dci->destroyPlaybackRegion (doc.dcRef, playbackRegionRef);
-            doc.willDestroyPlaybackRegionOnTrack (clip.getTrack());
+            doc.willDestroyPlaybackRegionOnTrack (trackID);
         }
     }
 
@@ -1093,6 +1609,12 @@ public:
         if (playbackRegionRef != nullptr)
         {
             CRASH_TRACER
+
+            // Keep the owning track's name/order/colour in sync too - these are
+            // never propagated otherwise
+            if (auto seq = doc.regionSequences.find (trackID);
+                seq != doc.regionSequences.end() && seq->second != nullptr)
+                seq->second->updateProperties();
 
             updatePlaybackRegionProperties();
             auto playbackRegionProperties = getPlaybackRegionProperties();
@@ -1105,14 +1627,50 @@ public:
     /** NB: This is where time-stretching is setup */
     SizedStruct<ARA_STRUCT_MEMBER (ARAPlaybackRegionProperties, color)> getPlaybackRegionProperties()
     {
-        auto regionSequenceRef = doc.regionSequences[clip.getTrack()]->regionSequenceRef;
+        auto regionSequenceRef = doc.regionSequences[trackID]->regionSequenceRef;
+
+        // Only request the transformations the clip actually needs: plain linear
+        // time-stretching when the speed ratio isn't 1. Reflecting-tempo stretch and
+        // content-based fades are deliberately not requested even if supported.
+        // When the plugin won't be stretching, the modification and playback
+        // durations must be equal, so the speed ratio mustn't be applied.
+        const bool useStretch = clip.getSpeedRatio() != 1.0
+                                 && (supportedFlags & kARAPlaybackTransformationTimestretch) != 0;
+        const ARAPlaybackTransformationFlags flags = useStretch ? kARAPlaybackTransformationTimestretch
+                                                                : kARAPlaybackTransformationNoChanges;
+        const double speedRatio = useStretch ? clip.getSpeedRatio() : 1.0;
+
+        if (isLoopIteration)
+        {
+            // Recompute this iteration's times from the current clip state so that
+            // updateRange() sends fresh values after the clip is moved or resized
+            auto pos = clip.getPosition();
+            auto loopLengthSecs = clip.getLoopLength().inSeconds();
+            auto iterStart = loopIteration * loopLengthSecs;
+            auto iterDuration = std::max (0.0, std::min (loopLengthSecs,
+                                                         pos.getLength().inSeconds() - iterStart));
+
+            return
+            {
+                flags,
+                clip.getLoopStart().inSeconds() * speedRatio,     // Start in modification time
+                iterDuration * speedRatio,                        // Duration in modification time
+                pos.getStart().inSeconds() + iterStart,           // Start in playback time
+                iterDuration,                                     // Duration in playback time
+                doc.musicalContext->musicalContextRef,
+                regionSequenceRef,
+                name.toRawUTF8(),
+                &colour
+            };
+        }
+
         auto pos = clip.getPosition();
 
         return
         {
             flags,
-            pos.getOffset().inSeconds() * clip.getSpeedRatio(),   // Start in modification time
-            pos.getLength().inSeconds() * clip.getSpeedRatio(),   // Duration in modification time
+            pos.getOffset().inSeconds() * speedRatio,             // Start in modification time
+            pos.getLength().inSeconds() * speedRatio,             // Duration in modification time
             pos.getStart().inSeconds(),                           // Start in playback time
             pos.getLength().inSeconds(),                          // Duration in playback time
             doc.musicalContext->musicalContextRef,
@@ -1125,6 +1683,7 @@ public:
     //==============================================================================
     ARADocument& doc;
     AudioClipBase& clip;
+    EditItemID trackID;
 
 private:
     void updatePlaybackRegionProperties()
@@ -1136,7 +1695,10 @@ private:
 
     juce::String name;
     ARAColor colour;
-    const ARAPlaybackTransformationFlags flags;
+    const ARAPlaybackTransformationFlags supportedFlags;
+    ARAAudioModificationRef audioModificationRef = nullptr;
+    const bool isLoopIteration = false;
+    const int loopIteration = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PlaybackRegionWrapper)
 };
@@ -1151,11 +1713,15 @@ public:
                              const ARAPlugInExtensionInstance& pluginExtensionInstance,
                              const juce::String& itemID,
                              PlaybackRegionAndSource* instanceToClone)
-        : pluginInstance (pluginExtensionInstance)
+        : clip (audioClip),
+          araDoc (doc),
+          araFactory (f),
+          pluginInstance (pluginExtensionInstance)
     {
         CRASH_TRACER
 
-        audioSource = std::make_unique<AudioSourceWrapper> (doc, audioClip);
+        audioSource = doc.acquireAudioSource (audioClip);
+        audioSourceKey = audioClip.getAudioFile().getHashString();
 
         if (audioSource->audioSourceRef != nullptr)
         {
@@ -1165,11 +1731,12 @@ public:
 
             if (audioModification->audioModificationRef != nullptr)
             {
-                playbackRegion = std::make_unique<PlaybackRegionWrapper> (doc, audioClip, f, *audioModification);
-                setPlaybackRegion();
-
+                rebuildPlaybackRegions();
                 enable();
-                playbackRegion->updateRange();
+                enabledInConstructor = true;
+
+                for (auto& pr : playbackRegions)
+                    pr->updateRange();
             }
         }
     }
@@ -1178,11 +1745,17 @@ public:
     ~PlaybackRegionAndSource()
     {
         CRASH_TRACER
-        disable();
-        removePlaybackRegion();
-        playbackRegion = nullptr;
+
+        // Only balance the constructor's enable() - if construction failed part-way,
+        // an unmatched disable() would steal a sample-access reference from other
+        // clips sharing this audio source
+        if (enabledInConstructor)
+            disable();
+        removeAllPlaybackRegions();
+        playbackRegions.clear();
         audioModification = nullptr;
         audioSource = nullptr;
+        araDoc.releaseAudioSource (audioSourceKey);
     }
 
     void enable()
@@ -1190,7 +1763,7 @@ public:
         CRASH_TRACER
 
         if (audioSource != nullptr)
-            audioSource->enableAccess (true);
+            audioSource->acquireAccess();
     }
 
     void disable()
@@ -1198,67 +1771,128 @@ public:
         CRASH_TRACER
 
         if (audioSource != nullptr)
-            audioSource->enableAccess (false);
+            audioSource->releaseAccess();
     }
 
-    void setViewSelection()
+    /** Returns the number of playback regions a looping clip of the given length needs.
+        Uses a small tolerance so a length sitting on a loop boundary always produces a
+        stable count - deriving it any other way (e.g. repeated subtraction) can disagree
+        with ceil() by one and make the layout check rebuild the regions endlessly. */
+    static size_t getNumLoopRegions (double clipLengthSecs, double loopLengthSecs)
     {
-        if (pluginInstance.editorViewInterface != nullptr)
-        {
-            ARAViewSelection selection;
+        if (loopLengthSecs <= 0.0)
+            return 1;
 
-            ARAPlaybackRegionRef refs[1];
-            refs[0] = playbackRegion->playbackRegionRef;
-
-            selection.structSize = sizeof (selection);
-
-            selection.playbackRegionRefsCount = 1;
-            selection.playbackRegionRefs = refs;
-
-            selection.regionSequenceRefsCount = 0;
-            selection.regionSequenceRefs = nullptr;
-            selection.timeRange = nullptr;
-
-            pluginInstance.editorViewInterface->notifySelection (pluginInstance.editorViewRef, &selection);
-        }
+        auto count = static_cast<ptrdiff_t> (std::ceil ((clipLengthSecs / loopLengthSecs) - 1.0e-9));
+        return static_cast<size_t> (std::max<ptrdiff_t> (1, count));
     }
 
-    std::unique_ptr<PlaybackRegionWrapper> playbackRegion;
-    std::unique_ptr<AudioSourceWrapper> audioSource;
-    std::unique_ptr<AudioModificationWrapper> audioModification;
+    /** Returns true if the current set of playback regions still matches the given
+        clip state, i.e. no rebuild is needed and updateRange() suffices. */
+    bool playbackRegionLayoutMatches (bool isLooping, double clipLengthSecs, double loopLengthSecs) const
+    {
+        if (builtForLooping != (isLooping && loopLengthSecs > 0.0))
+            return false;
 
-private:
-    const ARAPlugInExtensionInstance& pluginInstance;
+        if (! builtForLooping)
+            return true;
 
-    void setPlaybackRegion()
+        return playbackRegions.size() == getNumLoopRegions (clipLengthSecs, loopLengthSecs);
+    }
+
+    /** Rebuilds all playback regions based on whether the clip is looping.
+        If looping, creates one PlaybackRegionWrapper per loop iteration.
+        If not looping, creates a single region covering the whole clip. */
+    void rebuildPlaybackRegions()
     {
         CRASH_TRACER
 
-        if (playbackRegion != nullptr && playbackRegion->playbackRegionRef != nullptr)
+        removeAllPlaybackRegions();
+        playbackRegions.clear();
+
+        if (audioModification == nullptr || audioModification->audioModificationRef == nullptr)
+            return;
+
+        // Snapshot the clip state once so the region count always agrees with
+        // playbackRegionLayoutMatches() for the same state
+        auto loopLengthSecs = clip.isLooping() ? clip.getLoopLength().inSeconds() : 0.0;
+        builtForLooping = loopLengthSecs > 0.0;
+
+        if (builtForLooping)
+        {
+            auto numRegions = getNumLoopRegions (clip.getPosition().getLength().inSeconds(), loopLengthSecs);
+
+            for (size_t iteration = 0; iteration < numRegions; ++iteration)
+            {
+                auto pr = std::make_unique<PlaybackRegionWrapper> (araDoc, clip, araFactory, *audioModification,
+                                                                   (int) iteration);
+                addPlaybackRegion (*pr);
+                playbackRegions.push_back (std::move (pr));
+            }
+        }
+        else
+        {
+            auto pr = std::make_unique<PlaybackRegionWrapper> (araDoc, clip, araFactory, *audioModification);
+            addPlaybackRegion (*pr);
+            playbackRegions.push_back (std::move (pr));
+        }
+    }
+
+    /** Returns the first playback region, or nullptr if none exist. */
+    PlaybackRegionWrapper* getFirstPlaybackRegion() const
+    {
+        return playbackRegions.empty() ? nullptr : playbackRegions[0].get();
+    }
+
+    /** Returns true if there is at least one playback region. */
+    bool hasPlaybackRegions() const { return ! playbackRegions.empty(); }
+
+    std::vector<std::unique_ptr<PlaybackRegionWrapper>> playbackRegions;
+    std::shared_ptr<AudioSourceWrapper> audioSource;
+    std::unique_ptr<AudioModificationWrapper> audioModification;
+    juce::String audioSourceKey;
+
+private:
+    AudioClipBase& clip;
+    ARADocument& araDoc;
+    const ARAFactory& araFactory;
+    const ARAPlugInExtensionInstance& pluginInstance;
+    bool enabledInConstructor = false;
+    bool builtForLooping = false;
+
+    void addPlaybackRegion (PlaybackRegionWrapper& pr)
+    {
+        CRASH_TRACER
+
+        if (pr.playbackRegionRef != nullptr)
         {
             if (pluginInstance.playbackRendererInterface != nullptr)
                 pluginInstance.playbackRendererInterface->addPlaybackRegion (pluginInstance.playbackRendererRef,
-                                                                             playbackRegion->playbackRegionRef);
+                                                                             pr.playbackRegionRef);
             if (pluginInstance.editorRendererInterface != nullptr)
                 pluginInstance.editorRendererInterface->addPlaybackRegion (pluginInstance.editorRendererRef,
-                                                                           playbackRegion->playbackRegionRef);
+                                                                           pr.playbackRegionRef);
         }
     }
 
-    void removePlaybackRegion()
+    void removeAllPlaybackRegions()
     {
         CRASH_TRACER
 
-        if (playbackRegion != nullptr && playbackRegion->playbackRegionRef != nullptr)
+        for (auto& pr : playbackRegions)
         {
-            if (pluginInstance.playbackRendererInterface != nullptr)
-                pluginInstance.playbackRendererInterface->removePlaybackRegion (pluginInstance.playbackRendererRef,
-                                                                                playbackRegion->playbackRegionRef);
-            if (pluginInstance.editorRendererInterface != nullptr)
-                pluginInstance.editorRendererInterface->removePlaybackRegion (pluginInstance.editorRendererRef,
-                                                                              playbackRegion->playbackRegionRef);
+            if (pr != nullptr && pr->playbackRegionRef != nullptr)
+            {
+                if (pluginInstance.playbackRendererInterface != nullptr)
+                    pluginInstance.playbackRendererInterface->removePlaybackRegion (pluginInstance.playbackRendererRef,
+                                                                                    pr->playbackRegionRef);
+                if (pluginInstance.editorRendererInterface != nullptr)
+                    pluginInstance.editorRendererInterface->removePlaybackRegion (pluginInstance.editorRendererRef,
+                                                                                  pr->playbackRegionRef);
+            }
         }
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PlaybackRegionAndSource)
 };
+

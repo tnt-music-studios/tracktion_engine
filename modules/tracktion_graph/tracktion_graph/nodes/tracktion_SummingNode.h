@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace graph
-{
+namespace tracktion::inline graph {
 
 //==============================================================================
 //==============================================================================
@@ -101,6 +100,10 @@ public:
 
     TransformResult transform (TransformOptions& options) override
     {
+        // The inputs' latencies can change as the graph is transformed (e.g. when a
+        // ReturnNode connects its sends) so any properties cached before now may be stale
+        cachedNodeProperties = std::nullopt;
+
         const bool hasFlattened = flattenSummingNodes();
         const bool hasCreatedLatency = ! options.disableLatencyCompensation && createLatencyNodes();
 
@@ -334,4 +337,4 @@ static inline std::unique_ptr<SummingNode> makeSummingNode (std::initializer_lis
     return std::make_unique<SummingNode> (std::move (nodeVector));
 }
 
-}}
+}

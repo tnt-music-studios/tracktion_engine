@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 ExternalController::ExternalController (Engine& e, ControlSurface* c)  : engine (e), controlSurface (c)
 {
@@ -76,9 +75,6 @@ ExternalController::~ExternalController()
         for (auto p : af->getAutomatableParameters())
             p->removeListener (this);
 
-    getControlSurface().shutDownDevice();
-    controlSurface = nullptr;
-
     auto& dm = engine.getDeviceManager();
     dm.removeChangeListener (this);
 
@@ -87,11 +83,11 @@ ExternalController::~ExternalController()
             if (min->isEnabled())
                 min->removeExternalController (this);
 
-    if (lastRegisteredSelectable != nullptr)
-    {
-        lastRegisteredSelectable->removeSelectableListener (this);
-        lastRegisteredSelectable = nullptr;
-    }
+    getControlSurface().shutDownDevice();
+    controlSurface = nullptr;
+
+    lastRegisteredListener.reset();
+    lastRegisteredSelectable = nullptr;
 }
 
 void ExternalController::changeListenerCallback (juce::ChangeBroadcaster*)
@@ -550,18 +546,18 @@ void ExternalController::clickChanged (bool isOn)
         getControlSurface().clickOnOffChanged (isOn);
 }
 
-void ExternalController::channelLevelChanged (int channelNum, float l, float r)
+void ExternalController::channelLevelChanged (int channelNum, std::span<const float> levels)
 {
     int i = getFaderIndexInActiveRegion (channelNum);
 
     if (i >= 0)
-        getControlSurface().channelLevelChanged (i, l, r);
+        getControlSurface().channelLevelChanged (i, levels);
 }
 
-void ExternalController::masterLevelsChanged (float leftLevel, float rightLevel)
+void ExternalController::masterLevelsChanged (std::span<const float> levels)
 {
     if (controlSurface != nullptr)
-        getControlSurface().masterLevelsChanged (leftLevel, rightLevel);
+        getControlSurface().masterLevelsChanged (levels);
 }
 
 void ExternalController::timecodeChanged (int barsOrHours,
@@ -778,7 +774,7 @@ void ExternalController::userPressedGoToMarker (int marker)
     if (auto tc = getTransport())
         if (auto ed = getEdit())
             if (auto mc = ed->getMarkerManager().getMarkers().getObjectPointer (marker + startMarkerNumber))
-                tc->setPosition (mc->getPosition().getStart());
+                tc->jumpTo (mc->getPosition().getStart());
 }
 
 void ExternalController::updateParameters()
@@ -906,16 +902,12 @@ void ExternalController::selectedPluginChanged()
     {
         if (getControlSurface().canChangeSelectedPlugin() || lastRegisteredSelectable == nullptr)
         {
-            if (lastRegisteredSelectable != nullptr)
-                lastRegisteredSelectable->removeSelectableListener (this);
-
             lastRegisteredSelectable = nullptr;
 
             if (auto sm = getExternalControllerManager().getSelectionManager())
                 lastRegisteredSelectable = sm->getSelectedObject (0);
 
-            if (lastRegisteredSelectable != nullptr)
-                lastRegisteredSelectable->addSelectableListener (this);
+            resetSelectableListener (lastRegisteredListener, lastRegisteredSelectable.get(), *this);
 
             juce::String pluginName;
             if (auto plugin = dynamic_cast<Plugin*> (lastRegisteredSelectable.get()))
@@ -948,7 +940,7 @@ void ExternalController::selectableObjectAboutToBeDeleted (Selectable* s)
 
     if (lastRegisteredSelectable == s)
     {
-        s->removeSelectableListener (this);
+        lastRegisteredListener.reset();
         lastRegisteredSelectable = nullptr;
 
         updateParameters();
@@ -1052,9 +1044,15 @@ void ExternalController::clearPadColours()
         {
             cs.clipsPlayingStateChanged (track, false);
             for (auto scene = 0; scene < cs.numberOfTrackPads; scene++)
-                cs.padStateChanged (track, scene, 0, 0);
+                cs.padColourStateChanged (track, scene, 0, {}, 0);
         }
     }
+}
+
+static int getPadColourIndex (Engine& engine, const Clip& clip, bool limitedPadColours)
+{
+    const auto index = engine.getUIBehaviour().getClipColourIndexForControlSurface (clip);
+    return (limitedPadColours && index != 0) ? 1 : index;
 }
 
 void ExternalController::updatePadColours()
@@ -1093,6 +1091,7 @@ void ExternalController::updatePadColours()
             {
                 auto colourIdx = 0;
                 auto state = 0;
+                juce::Colour colour;
 
                 if (auto ft = dynamic_cast<FolderTrack*> (ecm.getChannelTrack (track + channelStart)))
                 {
@@ -1102,14 +1101,11 @@ void ExternalController::updatePadColours()
                         {
                             if (auto c = slot->getClip())
                             {
-                                auto col = c->getColour();
+                                colourIdx = getPadColourIndex (engine, *c, cs.limitedPadColours);
 
-                                if (! col.isTransparent())
+                                if (colourIdx != 0)
                                 {
-                                    auto numColours = 19;
-                                    auto newHue = col.getHue();
-
-                                    colourIdx = cs.limitedPadColours ? 1 : juce::jlimit (0, numColours - 1, juce::roundToInt (newHue * (numColours - 1) + 1));
+                                    colour = engine.getUIBehaviour().getClipColourForControlSurface (*c);
                                     break;
                                 }
                             }
@@ -1138,15 +1134,8 @@ void ExternalController::updatePadColours()
                         }
                         else if (auto c = slot->getClip())
                         {
-                            auto col = c->getColour();
-
-                            if (! col.isTransparent())
-                            {
-                                auto numColours = 19;
-                                auto newHue = col.getHue();
-
-                                colourIdx = cs.limitedPadColours ? 1 : juce::jlimit (0, numColours - 1, juce::roundToInt (newHue * (numColours - 1) + 1));
-                            }
+                            colourIdx = getPadColourIndex (engine, *c, cs.limitedPadColours);
+                            colour = engine.getUIBehaviour().getClipColourForControlSurface (*c);
 
                             if (auto tc = getTransport())
                             {
@@ -1155,11 +1144,13 @@ void ExternalController::updatePadColours()
                                     if (lh->getPlayingStatus() == LaunchHandle::PlayState::playing)
                                     {
                                         colourIdx = cs.limitedPadColours ? 2 : 8;
+                                        colour = {};
                                         state = tc->isPlaying() ? 2 : 1;
                                     }
                                     else if (lh->getQueuedStatus() == LaunchHandle::QueueState::playQueued)
                                     {
                                         colourIdx = cs.limitedPadColours ? 2 : 8;;
+                                        colour = {};
                                         state = 1;
                                     }
                                 }
@@ -1201,7 +1192,7 @@ void ExternalController::updatePadColours()
                     }
                 }
 
-                cs.padStateChanged (track, scene, colourIdx, state);
+                cs.padColourStateChanged (track, scene, colourIdx, colour, state);
             }
         }
     }
@@ -1245,7 +1236,7 @@ void ExternalController::updateDeviceState()
 
                         updateSoloAndMute (chan, t->getMuteAndSoloLightState(), true);
 
-                        channelLevelChanged (chan, 0.0f, 0.0f);
+                        channelLevelChanged (chan, {});
 
                         if (auto sm = ecm.getSelectionManager())
                             trackSelected (chan, sm->isSelected (t));
@@ -1255,7 +1246,7 @@ void ExternalController::updateDeviceState()
                         moveFader (chan, decibelsToVolumeFaderPosition (0.0f));
                         movePanPot (chan, 0.0f);
                         updateSoloAndMute (chan, {}, false);
-                        channelLevelChanged (chan, 0.0f, 0.0f);
+                        channelLevelChanged (chan, {});
                         trackSelected (chan, false);
                     }
                 }
@@ -1319,7 +1310,7 @@ void ExternalController::updateDeviceState()
                 cs.punchOnOffChanged (edit->recordingPunchInOut);
                 cs.slaveOnOffChanged (edit->isTimecodeSyncEnabled());
 
-                masterLevelsChanged (0.0f, 0.0f);
+                masterLevelsChanged ({});
 
                 updateTrackRecordLights();
                 cs.auxBankChanged (auxBank);
@@ -1719,4 +1710,4 @@ juce::String ExternalController::shortenName (juce::String s, int maxLen)
     return result.substring (0, maxLen);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

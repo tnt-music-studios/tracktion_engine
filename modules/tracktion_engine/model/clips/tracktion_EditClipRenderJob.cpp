@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 RenderManager::Job::Ptr EditRenderJob::getOrCreateRenderJob (Engine& e, Renderer::Parameters& params,
                                                              bool deleteEdit, bool silenceOnBackup, bool reverse)
@@ -32,7 +31,7 @@ RenderManager::Job::Ptr EditRenderJob::getOrCreateRenderJob (Engine& e, Renderer
 }
 
 RenderManager::Job::Ptr EditRenderJob::getOrCreateRenderJob (Engine& e, const AudioFile& destFile, const RenderOptions& ro,
-                                                             ProjectItemID itemID, bool silenceOnBackup, bool reverse)
+                                                             ProjectItemRef itemID, bool silenceOnBackup, bool reverse)
 {
     if (auto ptr = e.getRenderManager().getRenderJobWithoutCreating (destFile))
         return ptr;
@@ -55,10 +54,10 @@ EditRenderJob::EditRenderJob (Engine& e, const Renderer::Parameters& p, bool del
 }
 
 EditRenderJob::EditRenderJob (Engine& e, const AudioFile& destFile_, const RenderOptions& ro,
-                              ProjectItemID edID, bool silenceOnBackup_, bool reverse_)
+                              ProjectItemRef edRef, bool silenceOnBackup_, bool reverse_)
     : Job (e, AudioFile (destFile_)),
       renderOptions (ro, nullptr),
-      itemID (edID),
+      itemRef (edRef),
       params (e),
       silenceOnBackup (silenceOnBackup_), reverse (reverse_),
       thumbnailToUpdate (256, e.getAudioFileFormatManager().readFormatManager,
@@ -90,7 +89,7 @@ void EditRenderJob::setLastError (const juce::String& e)
 //==============================================================================
 bool EditRenderJob::setUpRender()
 {
-    if (params.edit == nullptr || itemID.isValid())
+    if (params.edit == nullptr || itemRef.isValid())
     {
         CRASH_TRACER
 
@@ -108,18 +107,22 @@ bool EditRenderJob::setUpRender()
                                               }
                                           });
 
-        auto edit = loadEditForExamining (params.engine->getProjectManager(), itemID,
+        auto edit = loadEditForExamining (params.engine->getProjectManager(), itemRef,
                                           Edit::EditRole::forRendering, &context);
 
         // If the load was cancelled becuase the thread was cancelled we need to bail out
         if (! edit)
+        {
+            context.completed = true;
             return false;
+        }
 
         // it's difficult to determine the marked region or selections at this point, so we'll ignore it,
         // assuming that this code will only be used for rendering entire EditClips, and not sections of edits.
         jassert (! renderOptions.markedRegion);
         jassert (! renderOptions.selectedClips);
         jassert (! renderOptions.selectedTracks);
+        jassert (context.completed);
 
         params = renderOptions.getRenderParameters (*edit);
         params.edit         = edit.get();
@@ -194,17 +197,6 @@ EditRenderJob::RenderPass::~RenderPass()
     const bool completedOk = task != nullptr ? task->getCurrentTaskProgress() == 1.0f : false;
     task = nullptr;
 
-    if (owner.editDeleter.willDeleteObject())
-    {
-        try
-        {
-            callBlocking ([this] { Renderer::turnOffAllPlugins (*r.edit); });
-        }
-        catch (std::runtime_error&)
-        {
-        }
-    }
-
     // overwite with temp file
     if (! errorMessage.isEmpty() && owner.silenceOnBackup)
         owner.generateSilence (tempFile.getFile());
@@ -272,7 +264,7 @@ EditRenderJob::RenderPass::~RenderPass()
                                                      r.category,
                                                      true))
                 {
-                    jassert (item->getID().isValid());
+                    jassert (item->getProjectItemRef().isValid());
                     owner.result.items.add (item);
                 }
                 else
@@ -296,7 +288,6 @@ bool EditRenderJob::RenderPass::initialise()
     {
         callBlocking ([this]
                       {
-                          Renderer::turnOffAllPlugins (*r.edit);
                           r.edit->initialiseAllPlugins();
                           r.edit->getTransport().stop (false, true);
                       });
@@ -412,8 +403,12 @@ void EditRenderJob::renderSeparateTracks()
                                                                                 .getFullPathName()));
                 params.tracksToDo = tracksToDo;
 
-                if (Renderer::checkTargetFile (track->edit.engine, params.destFile))
-                    renderPasses.add (new RenderPass (*this, params, getDescription()));
+                Renderer::checkTargetFile (track->edit.engine, params.destFile,
+                                           [this, capturedParams = this->params, getDescription] (bool ok) mutable
+                                           {
+                                               if (ok)
+                                                   renderPasses.add (new RenderPass (*this, capturedParams, getDescription()));
+                                           });
 
                 // Temporarily create the output file so that it affects the next call to
                 // getNonExistentSiblingWithIncrementedNumberSuffix
@@ -438,7 +433,9 @@ bool EditRenderJob::generateSilence (const juce::File& fileToWriteTo)
     if (os == nullptr || params.audioFormat == nullptr)
         return false;
 
-    const int numChans = params.mustRenderInMono ? 1 : 2;
+    const int numChans = params.mustRenderInMono ? 1
+                                                  : (! params.channelConfig.isEmpty() ? params.channelConfig.getNumChannels()
+                                                                                      : 2);
     std::unique_ptr<juce::AudioFormatWriter> writer (params.audioFormat->createWriterFor (os,
                                                                                           juce::AudioFormatWriterOptions()
                                                                                             .withSampleRate (params.sampleRateForAudio)
@@ -465,7 +462,7 @@ bool EditRenderJob::generateSilence (const juce::File& fileToWriteTo)
         auto numThisTime = std::min ((int) numToDo, blockSize);
         writer->writeFromAudioSampleBuffer (buffer, 0, numThisTime);
 
-        progress = (float) (numDone / (float) numToDo);
+        progress = float (numDone) / float (numToDo);
         thumbnailToUpdate.addBlock (numDone, buffer, 0, numThisTime);
 
         numDone += numThisTime;
@@ -474,4 +471,4 @@ bool EditRenderJob::generateSilence (const juce::File& fileToWriteTo)
     return true;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -9,8 +9,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 TrackWaveInputDeviceNode::TrackWaveInputDeviceNode (ProcessState& processState_, WaveInputDevice& owner, std::unique_ptr<Node> inputNode,
                                                     bool copyInputsToOutputs_)
@@ -67,17 +66,13 @@ void TrackWaveInputDeviceNode::process (ProcessContext& pc)
     }
 
     // And pass audio to device
-    if (auto numChans = juce::jmin (2u, sourceBuffers.audio.getNumChannels()))
+    if (auto numChans = sourceBuffers.audio.getNumChannels())
     {
-        const float* chans[3] = { sourceBuffers.audio.getChannel(0).data.data,
-                                  numChans > 1 ? sourceBuffers.audio.getChannel(1).data.data
-                                               : nullptr,
-                                  nullptr };
-
         const auto streamPos = TimePosition::fromSamples (getReferenceSampleRange().getStart(), sampleRate);
-        waveInputDevice.consumeNextAudioBlock (chans, (int) numChans, (int) sourceBuffers.audio.getNumFrames(),
+        waveInputDevice.consumeNextAudioBlock (sourceBuffers.audio.data.channels, (int) numChans,
+                                               (int) sourceBuffers.audio.getNumFrames(),
                                                (streamPos + offset).inSeconds());
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

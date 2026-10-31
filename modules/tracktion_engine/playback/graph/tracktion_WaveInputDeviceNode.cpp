@@ -9,8 +9,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 WaveInputDeviceNode::WaveInputDeviceNode (InputDeviceInstance& idi, WaveInputDevice& owner,
                                           const juce::AudioChannelSet& destChannelsToFill)
@@ -36,7 +35,7 @@ tracktion::graph::NodeProperties WaveInputDeviceNode::getNodeProperties()
 
 void WaveInputDeviceNode::prepareToPlay (const tracktion::graph::PlaybackInitialisationInfo& info)
 {
-    auto numIncomingChannels = (waveInputDevice.isStereoPair()) ? 2u : 1u;
+    auto numIncomingChannels = (uint32_t) waveInputDevice.getChannels().getNumChannels();
     audioFifo.setSize (numIncomingChannels, (uint32_t) info.blockSize * 8);
     lastCallbackTime = juce::Time::getMillisecondCounter();
 
@@ -89,4 +88,4 @@ void WaveInputDeviceNode::acceptInputBuffer (choc::buffer::ChannelArrayView<floa
     audioFifo.write (newBlock);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

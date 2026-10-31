@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 //==============================================================================
@@ -492,7 +491,8 @@ namespace RackNodeBuilder
         for (auto& node : itemNodes)
             if (auto modifierNode = dynamic_cast<ModifierNode*> (node.second.get()))
                 if (getConnectionsFrom (rack, modifierNode->getModifier().itemID).empty())
-                    finalOutput->addInput (makeNode<ForwardingNode> (node.second));
+                    finalOutput->addInput (makeNode<ForwardingNode> (node.second,
+                                                                     (size_t) modifierNode->getModifier().itemID.getRawID()));
 
         if (finalOutput->getDirectInputNodes().size() > 0)
         {
@@ -516,4 +516,4 @@ namespace RackNodeBuilder
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

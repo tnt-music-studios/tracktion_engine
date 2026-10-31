@@ -10,7 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine
 {
 
 namespace
@@ -70,7 +70,7 @@ NodeRenderContext::NodeRenderContext (Renderer::RenderTask& owner_, Renderer::Pa
         TRACKTION_LOG_ERROR("Rendering whilst attached to audio device");
     }
 
-    if (r.shouldNormalise || r.trimSilenceAtEnds || r.shouldNormaliseByRMS)
+    if (r.shouldNormalise || r.trimSilenceAtEnds || r.shouldNormaliseByRMS || r.shouldNormaliseByLUFS || r.wrapRemainder)
     {
         needsToNormaliseAndTrim = true;
 
@@ -82,9 +82,10 @@ NodeRenderContext::NodeRenderContext (Renderer::RenderTask& owner_, Renderer::Pa
         r.shouldNormalise = false;
         r.trimSilenceAtEnds = false;
         r.shouldNormaliseByRMS = false;
+        r.shouldNormaliseByLUFS = false;
     }
 
-    numOutputChans = 2;
+    ChannelConfiguration outputChannelConfig;
 
     {
         auto props = nodePlayer->getNode()->getNodeProperties();
@@ -96,14 +97,43 @@ NodeRenderContext::NodeRenderContext (Renderer::RenderTask& owner_, Renderer::Pa
         }
 
         if (r.mustRenderInMono || (r.canRenderInMono && (props.numberOfChannels < 2)))
-            numOutputChans = 1;
+            outputChannelConfig = ChannelConfiguration::mono();
+        else if (! r.channelConfig.isEmpty())
+            outputChannelConfig = r.channelConfig;
+        else
+            outputChannelConfig = ChannelConfiguration::canonical (juce::jmax (2, (int) props.numberOfChannels));
+    }
+
+    numOutputChans = outputChannelConfig.getNumChannels();
+
+    // Build a channel map from the graph's output order to the requested output order.
+    // Each entry in outputChannelConfig has an indexInDevice which tells us which graph
+    // channel should map to that output position.
+    {
+        auto graphChans = (int) nodePlayer->getNode()->getNodeProperties().numberOfChannels;
+
+        for (int destCh = 0; destCh < numOutputChans; ++destCh)
+        {
+            auto srcCh = outputChannelConfig[(size_t) destCh].indexInDevice;
+
+            if (srcCh >= 0 && srcCh < graphChans)
+                outputChannelMap.entries.push_back ({ srcCh, destCh, 1.0f });
+        }
     }
 
     AudioFileUtils::addBWAVStartToMetadata (r.metadata, toSamples (r.time.getStart(), r.sampleRateForAudio));
 
+    // Try to create writer with channel layout metadata first
     writer = std::make_unique<AudioFileWriter> (AudioFile (*originalParams.engine, r.destFile),
                                                 r.audioFormat, numOutputChans, r.sampleRateForAudio,
-                                                r.bitDepth, r.metadata, r.quality);
+                                                r.bitDepth, r.metadata, r.quality,
+                                                outputChannelConfig.toChannelSet());
+
+    // Some formats don't support certain channel layouts — fall back to just numChannels
+    if (! writer->isOpen())
+        writer = std::make_unique<AudioFileWriter> (AudioFile (*originalParams.engine, r.destFile),
+                                                    r.audioFormat, numOutputChans, r.sampleRateForAudio,
+                                                    r.bitDepth, r.metadata, r.quality);
 
     if (r.destFile != juce::File() && ! writer->isOpen())
     {
@@ -145,6 +175,8 @@ NodeRenderContext::NodeRenderContext (Renderer::RenderTask& owner_, Renderer::Pa
     playHead->setPosition (toSamples (r.time.getStart(), r.sampleRateForAudio));
 
     samplesToWrite = tracktion::toSamples ((r.time.getLength() + r.endAllowance), r.sampleRateForAudio);
+    rangeLengthInSamples = tracktion::toSamples (r.time.getLength(), r.sampleRateForAudio);
+    samplesPastRangeStart = 0;
 
     if (sourceToUpdate != nullptr)
         sourceToUpdate->reset (numOutputChans, r.sampleRateForAudio, samplesToWrite);
@@ -154,8 +186,8 @@ NodeRenderContext::~NodeRenderContext()
 {
     CRASH_TRACER
     r.resultMagnitude = owner.params.resultMagnitude = peak;
-    r.resultRMS = owner.params.resultRMS = rmsNumSamps > 0 ? (float) (rmsTotal / rmsNumSamps) : 0.0f;
-    r.resultAudioDuration = owner.params.resultAudioDuration = float (numSamplesWrittenToSource / owner.params.sampleRateForAudio);
+    r.resultRMS = owner.params.resultRMS = rmsNumSamps > 0 ? (float) (rmsTotal / static_cast<double> (rmsNumSamps)) : 0.0f;
+    r.resultAudioDuration = owner.params.resultAudioDuration = float (static_cast<double> (numSamplesWrittenToSource) / owner.params.sampleRateForAudio);
 
     playHead->stop();
     Renderer::RenderTask::setAllPluginsRealtime (plugins, true);
@@ -167,11 +199,15 @@ NodeRenderContext::~NodeRenderContext()
     {
         callBlocking ([this] { nodePlayer.reset(); });
 
-        if (needsToNormaliseAndTrim)
+        // Normalising a cancelled render re-reads and re-encodes the whole partial file
+        // only for the result to be thrown away, so skip it and let the file be deleted
+        if (needsToNormaliseAndTrim && ! wasCancelled && ! owner.shouldCancel())
             owner.performNormalisingAndTrimming (originalParams, r);
     }
-    catch (std::runtime_error& err)
+    catch (const std::exception& err)
     {
+        // Destructors are implicitly noexcept, so anything escaping here (a bad_alloc
+        // from the normalising pass, say) would terminate rather than fail the render
         TRACKTION_LOG_ERROR (err.what());
     }
 }
@@ -187,13 +223,18 @@ bool NodeRenderContext::renderNextBlock (std::atomic<float>& progressToUpdate)
         juce::Thread::sleep (1);
     }
 
-    if (owner.shouldExit())
+    if (owner.shouldCancel())
     {
+        wasCancelled = true;
         writer->closeForWriting();
         r.destFile.deleteFile();
 
         playHead->stop();
         Renderer::RenderTask::setAllPluginsRealtime (plugins, true);
+
+        // This reports the job as finished, so without an error the caller would be
+        // told a render whose file has just been deleted had succeeded (as renderMidi)
+        owner.errorMessage = TRANS("Render cancelled");
 
         return true;
     }
@@ -252,18 +293,51 @@ bool NodeRenderContext::renderNextBlock (std::atomic<float>& progressToUpdate)
         return true;
     }();
 
-    while (! (leafNodesReady || owner.shouldExit()))
+    while (! (leafNodesReady || owner.shouldCancel()))
         return false;
 
-    juce::AudioBuffer<float> renderingBuffer (numOutputChans, r.blockSizeForAudio + 256);
+    const auto bufferSize = r.blockSizeForAudio + 256;
+    const auto numFrames = (choc::buffer::FrameCount) referenceSampleRange.getLength();
+    const bool needsChannelRemap = ! outputChannelMap.isEmpty() && ! outputChannelMap.isIdentity();
+
+    // Allocate graph buffer (may differ from output if remapping is needed)
+    // Must be large enough for both the graph's output and the remap source channels
+    auto maxSourceChan = [&]
+    {
+        int maxSrc = 0;
+
+        for (const auto& e : outputChannelMap.entries)
+            maxSrc = juce::jmax (maxSrc, e.source + 1);
+
+        return maxSrc;
+    }();
+    const int graphBufferChans = needsChannelRemap ? juce::jmax (maxSourceChan, numOutputChans) : numOutputChans;
+    juce::AudioBuffer<float> renderingBuffer (graphBufferChans, bufferSize);
     renderingBuffer.clear();
     midiBuffer.clear();
 
     auto destView = choc::buffer::createChannelArrayView (renderingBuffer.getArrayOfWritePointers(),
-                                                          (choc::buffer::ChannelCount) renderingBuffer.getNumChannels(),
-                                                          (choc::buffer::FrameCount) referenceSampleRange.getLength());
+                                                          (choc::buffer::ChannelCount) graphBufferChans,
+                                                          numFrames);
 
-    nodePlayer->process ({ (choc::buffer::FrameCount) referenceSampleRange.getLength(), referenceSampleRange, { destView, midiBuffer} });
+    nodePlayer->process ({ numFrames, referenceSampleRange, { destView, midiBuffer} });
+
+    // Remap channels from graph order to requested output order
+    if (needsChannelRemap)
+    {
+        juce::AudioBuffer<float> remappedBuffer (numOutputChans, (int) numFrames);
+        remappedBuffer.clear();
+
+        for (const auto& entry : outputChannelMap.entries)
+            if (entry.source < graphBufferChans && entry.dest < numOutputChans)
+                remappedBuffer.addFrom (entry.dest, 0, renderingBuffer, entry.source, 0, (int) numFrames, entry.gain);
+
+        // Copy remapped data back into renderingBuffer (resized to output channel count)
+        renderingBuffer.setSize (numOutputChans, (int) numFrames, false, false, true);
+
+        for (int ch = 0; ch < numOutputChans; ++ch)
+            renderingBuffer.copyFrom (ch, 0, remappedBuffer, ch, 0, (int) numFrames);
+    }
 
     if (precount <= 0)
     {
@@ -283,6 +357,28 @@ bool NodeRenderContext::renderNextBlock (std::atomic<float>& progressToUpdate)
 
             blockSize = numSamplesDone;
             blockOffset = destView.getNumFrames() - blockSize;
+        }
+
+        if (blockSize > 0 && r.endAllowance > 0_td)
+        {
+            // Once into the end allowance, a silent stretch means the tail has
+            // finished: stop at the end of the range or of the last audible block,
+            // rather than writing the silence that proved it
+            const auto numInRange = (uint32_t) juce::jlimit ((int64_t) 0, (int64_t) blockSize,
+                                                             rangeLengthInSamples - samplesPastRangeStart);
+
+            if (numInRange < blockSize
+                 && renderingBuffer.getMagnitude ((int) (blockOffset + numInRange),
+                                                  (int) (blockSize - numInRange)) <= thresholdForStopping)
+            {
+                if (numInRange > 0)
+                    if (writeAudioBlock (destView.getFrameRange ({ blockOffset, blockOffset + numInRange })) == WriteResult::failed)
+                        return true;
+
+                return true;
+            }
+
+            samplesPastRangeStart += blockSize;
         }
 
         if (blockSize > 0)
@@ -403,11 +499,17 @@ juce::String NodeRenderContext::renderMidi (Renderer::RenderTask& owner,
     playHeadState->update (toSamples ({ streamTime, streamTime + blockLength }, sampleRate));
 
     // Wait for any nodes to render their sources or proxies
-    auto leafNodesReady = [nodes = getNodes (*nodePlayer->getNode(), VertexOrdering::postordering)]
+    auto leafNodesReady = [nodes = getNodes (*nodePlayer->getNode(), VertexOrdering::postordering),
+                           referenceSampleRange = toSamples ({ streamTime, streamTime + blockLength }, sampleRate)]
     {
         for (auto node : nodes)
+        {
+            // Call prepare for next block here to ensure isReadyToProcess internals are updated
+            node->prepareForNextBlock (referenceSampleRange);
+
             if (node->getDirectInputNodes().empty() && ! node->isReadyToProcess())
                 return false;
+        }
 
         return true;
     };
@@ -416,7 +518,7 @@ juce::String NodeRenderContext::renderMidi (Renderer::RenderTask& owner,
     {
         juce::Thread::sleep (100);
 
-        if (owner.shouldExit())
+        if (owner.shouldCancel())
             return TRANS("Render cancelled");
     }
 
@@ -429,7 +531,7 @@ juce::String NodeRenderContext::renderMidi (Renderer::RenderTask& owner,
 
     for (;;)
     {
-        if (owner.shouldExit())
+        if (owner.shouldCancel())
             return TRANS("Render cancelled");
 
         if (streamTime > r.time.getEnd())
@@ -469,7 +571,7 @@ juce::String NodeRenderContext::renderMidi (Renderer::RenderTask& owner,
     playHead->stop();
 
     if (outputSequence.getNumEvents() == 0)
-        return TRANS("No MIDI found to render");
+        return TRANS("No MIDI data to write, so no file was created");
 
     if (! Renderer::RenderTask::addMidiMetaDataAndWriteToFile (r.destFile, std::move (outputSequence), r.edit->tempoSequence))
         return TRANS("Unable to write to destination file");
@@ -478,4 +580,4 @@ juce::String NodeRenderContext::renderMidi (Renderer::RenderTask& owner,
 }
 
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

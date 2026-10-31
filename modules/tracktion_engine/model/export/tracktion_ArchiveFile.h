@@ -8,8 +8,8 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
+namespace legacy {
 
 //==============================================================================
 /**
@@ -42,7 +42,8 @@ public:
     std::unique_ptr<juce::InputStream> createStoredInputStream (int index) const;
 
     bool extractFile (int index, const juce::File& destDirectory,
-                      juce::File& fileCreated, bool askBeforeOverwriting);
+                      juce::File& fileCreated, bool askBeforeOverwriting,
+                      std::function<void (bool)> callback = nullptr);
     bool extractAll (const juce::File& destDirectory,
                      juce::Array<juce::File>& filesCreated);
     bool extractAllAsTask (const juce::File& destDirectory,
@@ -96,4 +97,5 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TracktionArchiveFile)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace legacy
+} // namespace tracktion::inline engine

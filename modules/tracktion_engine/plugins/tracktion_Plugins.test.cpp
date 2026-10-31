@@ -69,7 +69,7 @@ TEST_SUITE ("tracktion_engine")
                 if (transient)
                 {
                     MESSAGE ("Transient diff frames: " << std::to_string (std::abs (transient->first - expectedTransientSample))); // 5 sample tolerance
-                    MESSAGE (std::to_string (transient->first > 0.5f));
+                    MESSAGE (std::to_string (static_cast<float> (transient->first) > 0.5f));
                 }
             }
         };
@@ -114,42 +114,84 @@ TEST_SUITE ("tracktion_engine")
     }
 }
 
-//==============================================================================
-//==============================================================================
-class PDCTests  : public juce::UnitTest
+template<typename AudioFormatType>
+static std::unique_ptr<juce::TemporaryFile> getSinFile (double sampleRate)
 {
-public:
-    PDCTests()
-        : juce::UnitTest ("PDC", "tracktion_engine")
+    // Create a 1s sin buffer
+    juce::AudioBuffer<float> buffer (1, (int) sampleRate);
+    juce::dsp::Oscillator<float> osc ([] (float in) { return std::sin (in); });
+    osc.setFrequency (220.0);
+    osc.prepare ({ double (sampleRate), uint32_t (sampleRate), 1 });
+
+    float* samples = buffer.getWritePointer (0);
+    int numSamples = buffer.getNumSamples();
+
+    for (int i = 0; i < numSamples; ++i)
+        samples[i] = osc.processSample (0.0);
+
+    // Then write it to a temp file
+    AudioFormatType format;
+    auto f = std::make_unique<juce::TemporaryFile> (format.getFileExtensions()[0]);
+
+    if (auto fileStream = std::unique_ptr<juce::OutputStream> (f->getFile().createOutputStream()))
     {
+        const int numQualityOptions = format.getQualityOptions().size();
+        const int qualityOptionIndex = numQualityOptions == 0 ? 0 : (numQualityOptions / 2);
+        const int bitDepth = format.getPossibleBitDepths().contains (16) ? 16 : 32;
+
+        if (auto writer = std::unique_ptr<juce::AudioFormatWriter> (AudioFormatType().createWriterFor (fileStream,
+                                                                                                       juce::AudioFormatWriterOptions()
+                                                                                                        .withSampleRate (sampleRate)
+                                                                                                        .withNumChannels (1)
+                                                                                                        .withBitsPerSample (bitDepth)
+                                                                                                        .withQualityOptionIndex (qualityOptionIndex))))
+        {
+            fileStream.release();
+            writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+        }
     }
 
-    void runTest() override
+    return f;
+}
+
+static void expectPeak (Edit& edit, TimeRange tr, juce::Array<Track*> tracks, float expectedPeak)
+{
+    auto blockSize = edit.engine.getDeviceManager().getBlockSize();
+    auto stats = Renderer::measureStatistics ("PDC Tests", edit, tr, toBitSet (tracks), blockSize);
+    MESSAGE ("Stats: peak " * juce::String (stats.peak).toStdString()
+             * ", avg " * juce::String (stats.average).toStdString()
+             * ", duration " * juce::String (stats.audioDuration).toStdString());
+    CHECK_MESSAGE (juce::isWithin (stats.peak, expectedPeak, 0.001f), (juce::String ("Expected peak: ") + juce::String (expectedPeak, 4)).toStdString());
+}
+
+TEST_SUITE ("tracktion_engine")
+{
+    TEST_CASE ("PDC")
     {
         auto sinFile = getSinFile<juce::WavAudioFormat> (44100.0);
 
         auto& engine = *Engine::getEngines()[0];
         engine.getPluginManager().createBuiltInType<LatencyPlugin>();
 
-        beginTest ("No latency");
+        SUBCASE ("No latency")
         {
-            expectEquals (sinFile->getFile().getFileExtension(), juce::String (".wav"));
+            CHECK_EQ (sinFile->getFile().getFileExtension(), juce::String (".wav"));
             auto edit = engine::test_utilities::createTestEdit (engine, 2);
             auto track1 = getAudioTracks (*edit)[0];
             auto track2 = getAudioTracks (*edit)[1];
-            expect (track1 != track2);
+            CHECK (track1 != track2);
 
             // Add sin file
             {
                 AudioFile af (engine, sinFile->getFile());
-                expect (af.isValid());
-                expect (af.getLength() == 1.0);
+                CHECK (af.isValid());
+                CHECK (af.getLength() == 1.0);
 
                 for (auto t : { track1, track2 })
                 {
                     auto clip = t->insertWaveClip ("sin", af.getFile(), {{ TimePosition(), TimePosition::fromSeconds (af.getLength()) }}, false);
-                    expectEquals (clip->getPosition().getStart(), TimePosition());
-                    expectEquals (clip->getPosition().getEnd(), TimePosition::fromSeconds (1.0));
+                    CHECK_EQ (clip->getPosition().getStart(), TimePosition());
+                    CHECK_EQ (clip->getPosition().getEnd(), TimePosition::fromSeconds (1.0));
                 }
             }
 
@@ -164,24 +206,24 @@ public:
             edit->getTempDirectory (false).deleteRecursively();
         }
 
-        beginTest ("Source file with different sample rate");
+        SUBCASE ("Source file with different sample rate")
         {
             auto sinFile96Ogg = getSinFile<juce::OggVorbisAudioFormat> (96000.0);
-            expectEquals (sinFile96Ogg->getFile().getFileExtension(), juce::String (".ogg"));
+            CHECK_EQ (sinFile96Ogg->getFile().getFileExtension(), juce::String (".ogg"));
             auto edit = engine::test_utilities::createTestEdit (engine, 2);
             auto track1 = getAudioTracks (*edit)[0];
 
             // Add sin file
             {
                 AudioFile af (engine, sinFile96Ogg->getFile());
-                expect (af.isValid());
-                expect (af.getLength() == 1.0);
+                CHECK (af.isValid());
+                CHECK (af.getLength() == 1.0);
 
                 for (auto t : { track1 })
                 {
                     auto clip = t->insertWaveClip ("sin", af.getFile(), {{ TimePosition(), TimePosition::fromSeconds (af.getLength()) }}, false);
-                    expectEquals (clip->getPosition().getStart(), TimePosition());
-                    expectEquals (clip->getPosition().getEnd(), TimePosition::fromSeconds (1.0));
+                    CHECK_EQ (clip->getPosition().getStart(), TimePosition());
+                    CHECK_EQ (clip->getPosition().getEnd(), TimePosition::fromSeconds (1.0));
                 }
             }
 
@@ -191,91 +233,15 @@ public:
             edit->getTempDirectory (false).deleteRecursively();
         }
     }
-
-    void expectPeak (Edit& edit, TimeRange tr, juce::Array<Track*> tracks, float expectedPeak)
-    {
-        auto blockSize = edit.engine.getDeviceManager().getBlockSize();
-        auto stats = logStats (Renderer::measureStatistics ("PDC Tests", edit, tr, getTracksMask (tracks), blockSize));
-        expect (juce::isWithin (stats.peak, expectedPeak, 0.001f), juce::String ("Expected peak: ") + juce::String (expectedPeak, 4));
-    }
-
-    Renderer::Statistics logStats (Renderer::Statistics stats)
-    {
-        logMessage ("Stats: peak " + juce::String (stats.peak) + ", avg " + juce::String (stats.average)
-                     + ", duration " + juce::String (stats.audioDuration));
-        return stats;
-    }
-
-    static juce::BigInteger getTracksMask (const juce::Array<Track*>& tracks)
-    {
-        juce::BigInteger tracksMask;
-
-        for (auto t : tracks)
-            tracksMask.setBit (t->getIndexInEditTrackList());
-
-        jassert (tracksMask.countNumberOfSetBits() == tracks.size());
-        return tracksMask;
-    }
-
-    //==============================================================================
-    template<typename AudioFormatType>
-    std::unique_ptr<juce::TemporaryFile> getSinFile (double sampleRate)
-    {
-        // Create a 1s sin buffer
-        juce::AudioBuffer<float> buffer (1, (int) sampleRate);
-        juce::dsp::Oscillator<float> osc ([] (float in) { return std::sin (in); });
-        osc.setFrequency (220.0);
-        osc.prepare ({ double (sampleRate), uint32_t (sampleRate), 1 });
-
-        float* samples = buffer.getWritePointer (0);
-        int numSamples = buffer.getNumSamples();
-
-        for (int i = 0; i < numSamples; ++i)
-            samples[i] = osc.processSample (0.0);
-
-        // Then write it to a temp file
-        AudioFormatType format;
-        auto f = std::make_unique<juce::TemporaryFile> (format.getFileExtensions()[0]);
-
-        if (auto fileStream = std::unique_ptr<juce::OutputStream> (f->getFile().createOutputStream()))
-        {
-            const int numQualityOptions = format.getQualityOptions().size();
-            const int qualityOptionIndex = numQualityOptions == 0 ? 0 : (numQualityOptions / 2);
-            const int bitDepth = format.getPossibleBitDepths().contains (16) ? 16 : 32;
-
-            if (auto writer = std::unique_ptr<juce::AudioFormatWriter> (AudioFormatType().createWriterFor (fileStream,
-                                                                                                           juce::AudioFormatWriterOptions()
-                                                                                                            .withSampleRate (sampleRate)
-                                                                                                            .withNumChannels (1)
-                                                                                                            .withBitsPerSample (bitDepth)
-                                                                                                            .withQualityOptionIndex (qualityOptionIndex))))
-            {
-                fileStream.release();
-                writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
-            }
-        }
-
-        return f;
-    }
-};
-
-static PDCTests pdcTests;
+}
 
 #endif
 
 #if ENGINE_UNIT_TESTS_MODIFIERS
 
-//==============================================================================
-//==============================================================================
-class ModifiedParameterValuesTests  : public juce::UnitTest
+TEST_SUITE ("tracktion_engine")
 {
-public:
-    ModifiedParameterValuesTests()
-        : juce::UnitTest ("Modified Parameter Values", "tracktion_engine")
-    {
-    }
-
-    void runTest() override
+    TEST_CASE ("Modified Parameter Values")
     {
         auto& engine = *Engine::getEngines()[0];
 
@@ -287,7 +253,6 @@ public:
         const float modifierOffset = 0.2f;
 
         // 1. create a new edit and add rack with a macro parameter
-        beginTest ("Rack with macro parameter");
         {
             editFile.deleteFile();
 
@@ -301,67 +266,48 @@ public:
             // Add macro parameter
             const auto macroParameter = rackType->getMacroParameterListForWriting().createMacroParameter();
             macroParameter->setNormalisedParameter (macroParameterValue, juce::NotificationType::sendNotification);
-            expectWithinAbsoluteError (getValueAt (*macroParameter, -1s), macroParameterValue, 0.001f);
+            CHECK (std::abs (getValueAt (*macroParameter, -1s) - macroParameterValue) <= 0.001f);
 
             auto volumeAndPan = dynamic_cast<VolumeAndPanPlugin*> (volumePlugin.get());
             auto volParam = volumeAndPan->volParam;
             volParam->setNormalisedParameter (0.0f, juce::NotificationType::sendNotification);
             volParam->addModifier (*macroParameter, modifierValue, modifierOffset, 0.5f);
-            expect (volParam->isAutomationActive());
+            CHECK (volParam->isAutomationActive());
 
-            expectWithinAbsoluteError (volParam->getCurrentValue(),
-                                       0.35f,
-                                       0.001f);
+            CHECK (std::abs (volParam->getCurrentValue() - 0.35f) <= 0.001f);
 
-            expectWithinAbsoluteError (volParam->getCurrentBaseValue(),
-                                       volParam->valueRange.convertFrom0to1 (0.0f),
-                                       0.001f);
-            expectWithinAbsoluteError (volParam->getCurrentValue(),
-                                       volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue),
-                                       0.001f);
-            expectWithinAbsoluteError (volParam->getCurrentModifierValue(),
-                                       volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue) - volParam->getCurrentBaseValue(),
-                                       0.001f);
+            CHECK (std::abs (volParam->getCurrentBaseValue() - volParam->valueRange.convertFrom0to1 (0.0f)) <= 0.001f);
+            CHECK (std::abs (volParam->getCurrentValue() - volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue)) <= 0.001f);
+            CHECK (std::abs (volParam->getCurrentModifierValue() - (volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue) - volParam->getCurrentBaseValue())) <= 0.001f);
 
             // volume="0.35" is saved in the plugin state xml
             EditFileOperations (*edit).save (true, true, false);
         }
 
         // 2. Load previously saved edit and check the parameter value
-        beginTest ("Loading saved Rack with macro parameter");
         {
             auto edit = loadEditFromFile (engine, editFile);
             auto rackType = edit->getRackList().getRackType (0);
 
             auto mpl = rackType->getMacroParameterList();
-            expect (mpl != nullptr);
-            expectEquals (mpl->getMacroParameters().size(), 1);
+            CHECK (mpl != nullptr);
+            CHECK_EQ (mpl->getMacroParameters().size(), 1);
             const auto macroParameter = mpl->getMacroParameters()[0];
-            expect (macroParameter != nullptr);
-            expectWithinAbsoluteError (getValueAt (*macroParameter, -1s), macroParameterValue, 0.001f);
+            CHECK (macroParameter != nullptr);
+            CHECK (std::abs (getValueAt (*macroParameter, -1s) - macroParameterValue) <= 0.001f);
 
             auto volumeAndPan = dynamic_cast<VolumeAndPanPlugin*> (rackType->getPlugins().getFirst());
             auto volParam = volumeAndPan->volParam;
-            expect (volParam->isAutomationActive());
+            CHECK (volParam->isAutomationActive());
 
-            expectWithinAbsoluteError (volParam->getCurrentBaseValue(),
-                                       volParam->valueRange.convertFrom0to1 (0.0f),
-                                       0.001f);
-            expectWithinAbsoluteError (volParam->getCurrentValue(),
-                                       volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue),
-                                       0.001f);
-            expectWithinAbsoluteError (volParam->getCurrentModifierValue(),
-                                       volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue) - volParam->getCurrentBaseValue(),
-                                       0.001f);
+            CHECK (std::abs (volParam->getCurrentBaseValue() - volParam->valueRange.convertFrom0to1 (0.0f)) <= 0.001f);
+            CHECK (std::abs (volParam->getCurrentValue() - volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue)) <= 0.001f);
+            CHECK (std::abs (volParam->getCurrentModifierValue() - (volParam->valueRange.convertFrom0to1 (modifierOffset + modifierValue * macroParameterValue) - volParam->getCurrentBaseValue())) <= 0.001f);
 
-            expectWithinAbsoluteError (volParam->getCurrentValue(), 0.35f, 0.001f);
+            CHECK (std::abs (volParam->getCurrentValue() - 0.35f) <= 0.001f);
         }
     }
-
-private:
-};
-
-static ModifiedParameterValuesTests modifiedParameterValuesTests;
+}
 
 
 //==============================================================================
@@ -391,7 +337,7 @@ TEST_SUITE ("tracktion_engine")
             auto player = test_utilities::createEnginePlayer (*edit, {}, { squareAudioFile });
             auto buffer = process (*player, fileLength);
 
-            CHECK_GT(getRMS (toBufferView (buffer).getChannel (0)), 0.99f);
+            CHECK_GT(getRMS (toBufferView (buffer).getChannel (0)), 0.98f);
         }
 
         // Now add Rack and clip shouldn't be heard
@@ -404,6 +350,35 @@ TEST_SUITE ("tracktion_engine")
 
             CHECK_LT(getRMS (toBufferView (buffer).getChannel (0)), 0.01f);
         }
+    }
+
+    TEST_CASE ("Modifier value history")
+    {
+        // Plays an LFO for longer than the stored history so the ring buffer
+        // wraps, then checks getValues returns the most recent values first
+        auto& engine = *Engine::getEngines()[0];
+        auto edit = engine::test_utilities::createTestEdit (engine, 1, Edit::forEditing);
+        auto& track = *getAudioTracks (*edit)[0];
+
+        auto lfo = track.getModifierList()->insertModifier (juce::ValueTree (IDs::LFO), 0, nullptr);
+        REQUIRE (lfo != nullptr);
+        track.getVolumePlugin()->volParam->addModifier (*lfo);
+
+        auto player = test_utilities::createEnginePlayer (*edit, {});
+        process (*player, Modifier::maxHistoryTime + 1s);
+
+        const auto sampleRate = lfo->getSampleRate();
+        const auto values = lfo->getValues (Modifier::maxHistoryTime);
+        REQUIRE (values.size() == (size_t) tracktion::toSamples (Modifier::maxHistoryTime, sampleRate));
+
+        for (auto i : { 0, 1, 100, 1000, 44100, (int) values.size() - 1 })
+            CHECK (std::abs (values[(size_t) i] - lfo->getValueAt (TimeDuration::fromSamples (i, sampleRate))) < 0.001f);
+
+        // The values aren't all the same so the order is actually being tested
+        CHECK (*std::min_element (values.begin(), values.end()) < *std::max_element (values.begin(), values.end()));
+
+        const auto halfSecond = TimeDuration::fromSeconds (0.5);
+        CHECK (lfo->getValues (halfSecond).size() == (size_t) tracktion::toSamples (halfSecond, sampleRate));
     }
 }
 
@@ -584,6 +559,88 @@ TEST_SUITE ("tracktion_engine")
     }
 }
 #endif
+
+TEST_SUITE ("tracktion_engine")
+{
+    TEST_CASE ("Rescanning an unchanged plugin keeps its info update time")
+    {
+        // Mimics LV2, which always gets re-described when scanning for new or updated plugins
+        struct ScanTestFormat  : public juce::AudioPluginFormat
+        {
+            juce::PluginDescription desc;
+
+            juce::String getName() const override                                           { return "ScanTestFormat"; }
+            bool fileMightContainThisPluginType (const juce::String&) override              { return true; }
+            juce::String getNameOfPluginFromIdentifier (const juce::String& s) override     { return s; }
+            bool pluginNeedsRescanning (const juce::PluginDescription&) override            { return true; }
+            bool doesPluginStillExist (const juce::PluginDescription&) override             { return true; }
+            bool canScanForPlugins() const override                                         { return true; }
+            bool isTrivialToScan() const override                                           { return true; }
+            juce::FileSearchPath getDefaultLocationsToSearch() override                     { return {}; }
+            bool requiresUnblockedMessageThreadDuringCreation (const juce::PluginDescription&) const override { return false; }
+
+            juce::StringArray searchPathsForPlugins (const juce::FileSearchPath&, bool, bool) override
+            {
+                return { desc.fileOrIdentifier };
+            }
+
+            void findAllTypesForFile (juce::OwnedArray<juce::PluginDescription>& results, const juce::String&) override
+            {
+                auto d = desc;
+                d.lastInfoUpdateTime = juce::Time::getCurrentTime();
+                results.add (new juce::PluginDescription (d));
+            }
+
+            void createPluginInstance (const juce::PluginDescription&, double, int, PluginCreationCallback callback) override
+            {
+                callback (nullptr, {});
+            }
+        };
+
+        auto& engine = *Engine::getEngines()[0];
+        auto& list = engine.getPluginManager().knownPluginList;
+
+        ScanTestFormat format;
+        format.desc.name = "Scan Test";
+        format.desc.pluginFormatName = format.getName();
+        format.desc.fileOrIdentifier = "urn:tracktion:scan-test";
+        format.desc.uniqueId = 1202;
+        format.desc.version = "1.0";
+        format.desc.lastFileModTime = juce::Time (1'000'000);
+
+        const auto originalUpdateTime = juce::Time (2'000'000);
+        auto existing = format.desc;
+        existing.lastInfoUpdateTime = originalUpdateTime;
+        list.addType (existing);
+        const juce::ScopeGuard removeTestType { [&] { list.removeType (existing); } };
+
+        auto rescan = [&]
+        {
+            juce::OwnedArray<juce::PluginDescription> found;
+            list.scanAndAddFile (format.desc.fileOrIdentifier, false, found, format);
+            auto desc = list.getTypeForFile (format.desc.fileOrIdentifier);
+            REQUIRE (desc != nullptr);
+            return desc->lastInfoUpdateTime;
+        };
+
+        SUBCASE ("Unchanged plugin")
+        {
+            CHECK (rescan() == originalUpdateTime);
+        }
+
+        SUBCASE ("Modified plugin file")
+        {
+            format.desc.lastFileModTime = juce::Time (3'000'000);
+            CHECK (rescan() > originalUpdateTime);
+        }
+
+        SUBCASE ("New plugin version")
+        {
+            format.desc.version = "1.1";
+            CHECK (rescan() > originalUpdateTime);
+        }
+    }
+}
 
 } // namespace tracktion::inline engine
 

@@ -8,19 +8,18 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** A (virtual) audio input device.
 
-    There'll be multiple instances of these, representing mono or stereo pairs of
-    input channels.
+    There'll be one or more instances of these, each one representing a group of
+    channels from a physical device.
 */
 class WaveInputDevice   : public InputDevice
 {
 public:
     //==============================================================================
-    WaveInputDevice (Engine&, const juce::String& type, const WaveDeviceDescription&, DeviceType);
+    WaveInputDevice (Engine&, const WaveDeviceDescription&, DeviceType);
     ~WaveInputDevice() override;
 
     static juce::StringArray getMergeModes();
@@ -29,7 +28,9 @@ public:
     void resetToDefault();
     void setEnabled (bool) override;
 
-    DeviceType getDeviceType() const override          { return deviceType; }
+    DeviceType getDeviceType() const override                   { return deviceType; }
+    juce::String getDeviceTypeDescription() const override;
+
     InputDeviceInstance* createInstance (EditPlaybackContext&) override;
 
     //==============================================================================
@@ -37,8 +38,14 @@ public:
     TimeDuration getRecordAdjustment() const                    { return TimeDuration::fromSeconds (recordAdjustMs / 1000.0); }
     void setRecordAdjustmentMs (double ms);
     double getRecordAdjustmentMs() const                        { return recordAdjustMs; }
+    /** @deprecated Use getChannels().getNumChannels() == 2 instead. */
+    [[deprecated ("Use getChannels().getNumChannels() == 2 instead")]]
     bool isStereoPair() const;
+
+    /** @deprecated Use setChannelConfiguration() instead. */
+    [[deprecated ("Use setChannelConfiguration() instead")]]
     void setStereoPair (bool);
+    juce::PopupMenu createChannelGroupMenu (bool includeSetAllChannelsOptions);
     juce::Array<int> getAvailableBitDepths() const;
     void setBitDepth (int);
     int getBitDepth() const                                     { return bitDepth; }
@@ -47,6 +54,19 @@ public:
     float getInputGainDb() const                                { return inputGainDb; }
     void setRecordTriggerDb (float);
     float getRecordTriggerDb() const                            { return recordTriggerDb; }
+
+    /** Closes or opens the input meter gate. When closed, the level meter is
+        suppressed until the input level exceeds the Record Trigger Level, at
+        which point the gate opens automatically and stays open until closed
+        again. This lets the user audition the trigger threshold without
+        actually recording. Also closed automatically when recording starts on
+        a context whose trigger level is meaningful. */
+    void setMeterGateClosed (bool);
+    bool isMeterGateClosed() const noexcept                     { return meterGateClosed.load (std::memory_order_relaxed); }
+
+    /** True if any of this device's instances currently has an active
+        recording context. Safe to call from the message thread. */
+    bool isAnyRecordingActive() const;
 
     juce::String getFilenameMask() const;
     void setFilenameMask (const juce::String&);
@@ -57,8 +77,12 @@ public:
     void setMergeMode (const juce::String&);
     juce::String getMergeMode() const;
 
-    const std::vector<ChannelIndex>& getChannels() const noexcept   { return deviceChannels; }
+    const ChannelConfiguration& getChannels() const noexcept        { return deviceDescription.channels; }
     const juce::AudioChannelSet& getChannelSet() const noexcept     { return channelSet; }
+
+    /** Updates the channel configuration for track devices.
+        Call this before recording to match the source track's channel layout. */
+    void setChannelConfiguration (const ChannelConfiguration&);
 
     //==============================================================================
     void masterTimeUpdate (double) override {}
@@ -68,7 +92,7 @@ public:
     void updateRetrospectiveBufferLength (double length) override;
 
     //==============================================================================
-    juce::String getSelectableDescription() override;
+    WaveDeviceDescription deviceDescription;
 
 protected:
     juce::String openDevice();
@@ -78,9 +102,8 @@ private:
     friend class DeviceManager;
     friend class WaveInputDeviceInstance;
 
-    const std::vector<ChannelIndex> deviceChannels;
     const DeviceType deviceType;
-    const juce::AudioChannelSet channelSet;
+    juce::AudioChannelSet channelSet;
 
     juce::String filenameMask;
     float inputGainDb = 0;
@@ -88,7 +111,10 @@ private:
     int bitDepth = 0, mergeMode = 0;
     float recordTriggerDb = 0;
     double recordAdjustMs = 0;
+    std::atomic<bool> meterGateClosed { false };
     std::unique_ptr<RetrospectiveRecordBuffer> retrospectiveBuffer;
+
+    void feedLevelMeasurerThroughGate (juce::AudioBuffer<float>&, int start, int numSamples);
 
     void loadProps();
     void saveProps() override;
@@ -149,4 +175,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveInputRecordingThread)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

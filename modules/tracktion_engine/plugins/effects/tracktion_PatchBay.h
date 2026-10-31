@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class PatchBayPlugin   : public Plugin
 {
@@ -46,21 +45,28 @@ public:
     bool canBeAddedToRack() override                    { return false; }
     bool canBeDisabled() override                       { return false; }
 
+    int getNumOutputChannelsGivenInputs (int numInputChannels) override;
+    BusLayout getBusses() const override   { return BusLayout::singlePassThrough(); }
+
     void initialise (const PluginInitialisationInfo&) override;
     void deinitialise() override;
+    void valueTreeParentChanged (juce::ValueTree&) override;
 
     void getChannelNames (juce::StringArray*, juce::StringArray*) override;
     void applyToBuffer (const PluginRenderContext&) override;
 
 private:
+    int getNumInputChannelsFromChain() const;
+    int getNumOutputChannelsFromChain() const;
     struct WireList;
     std::unique_ptr<WireList> list;
-    bool recursionCheck = false;
+    std::unique_ptr<LambdaValueTreeAllEventListener> parentListener;
     SafeSelectable<Plugin> inputPlugin, outputPlugin;
 
     void cacheInputAndOutputPlugins();
+    void listenToParentList();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PatchBayPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

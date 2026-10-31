@@ -157,6 +157,11 @@ bool ReadAheadTimeStretcher::setSpeedAndPitch (float speedRatio, float semitones
     return true;
 }
 
+int ReadAheadTimeStretcher::getLatencySamples() const
+{
+    return stretcher.getLatencySamples();
+}
+
 int ReadAheadTimeStretcher::getMaxFramesNeeded() const
 {
     // N.B. This should be thread safe as its constant in the stretcher implementations
@@ -212,8 +217,20 @@ int ReadAheadTimeStretcher::popData (float* const* outChannels, int numSamples)
 
     if (outputFifo.getNumReady() <= numSamples)
     {
-        [[ maybe_unused ]] const int numPopped = processNextBlock (true);
-        assert (numPopped > 0 && "Not enough input frames pushed");
+        // A stretcher that has just been reset can consume input frames without
+        // producing any output, so keep processing whilst input is being consumed.
+        // If no progress can be made, return what is ready (which may be nothing)
+        // and the caller can push more input frames and pop again
+        for (;;)
+        {
+            const auto numInputFramesBefore = inputFifo.getNumReady();
+
+            if (processNextBlock (true) > 0)
+                break;
+
+            if (inputFifo.getNumReady() >= numInputFramesBefore)
+                break;
+        }
     }
 
     const int numToRead = std::min (numSamples, outputFifo.getNumReady());

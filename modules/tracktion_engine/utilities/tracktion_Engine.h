@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     The Engine is the central class for all tracktion sessions.
@@ -45,6 +44,12 @@ public:
 
     /** Destructor. */
     ~Engine();
+
+    /** Begins async shutdown: closes edits, releases plugins, and waits for plugin
+        cleanup to complete. Call this before destroying the Engine. The callback is
+        invoked on the message thread when it's safe to destroy the Engine.
+        If not called, the destructor falls back to synchronous cleanup. */
+    void prepareForShutdown (std::function<void()> onReadyToDestroy);
 
     /** Returns the current version of Tracktion Engine. */
     static juce::String getVersion();
@@ -113,4 +118,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Engine)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

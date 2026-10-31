@@ -16,26 +16,13 @@
 
 #if TRACKTION_UNIT_TESTS && ENGINE_UNIT_TESTS_AUDIO_FILE_CACHE
 
-namespace tracktion { inline namespace engine
+#include <tracktion_engine/../3rd_party/doctest/tracktion_doctest.hpp>
+
+namespace tracktion::inline engine {
+
+TEST_SUITE ("tracktion_engine")
 {
-
-//==============================================================================
-//==============================================================================
-class AudioFileCacheTests   : public juce::UnitTest
-{
-public:
-    AudioFileCacheTests()
-        : juce::UnitTest ("AudioFileCache", "tracktion_engine")
-    {
-    }
-
-    void runTest() override
-    {
-        runCacheReadTest();
-    }
-
-private:
-    void runCacheReadTest()
+    TEST_CASE ("AudioFileCache: Read a sin wav file")
     {
         Engine& engine = *Engine::getEngines().getFirst();
 
@@ -53,28 +40,35 @@ private:
         {
             const int numToRead = std::min ((int) fileReader->lengthInSamples - i, 32'768);
             cacheReader->readSamples (numToRead,
-                                      bufferFromCache, juce::AudioChannelSet::stereo(),
-                                      i, juce::AudioChannelSet::stereo(), 5'000);
+                                      bufferFromCache, ChannelConfiguration::stereo(),
+                                      i, ChannelConfiguration::stereo(), 5'000);
         }
 
-        beginTest ("Read a sin wav file");
-        expectAudioBuffer (*this, bufferFromFile, bufferFromCache);
+        CHECK (bufferFromFile.getNumChannels() == bufferFromCache.getNumChannels());
+        CHECK (bufferFromFile.getNumSamples() == bufferFromCache.getNumSamples());
+
+        for (int channel = 0; channel < bufferFromFile.getNumChannels(); ++channel)
+        {
+            auto* aPtr = bufferFromFile.getReadPointer (channel);
+            auto* bPtr = bufferFromCache.getReadPointer (channel);
+
+            auto buffersMatch = std::vector<float> (aPtr, aPtr + bufferFromFile.getNumSamples())
+                                == std::vector<float> (bPtr, bPtr + bufferFromFile.getNumSamples());
+            CHECK (buffersMatch);
+        }
     }
-};
+}
 
-static AudioFileCacheTests audioFileCacheTests;
-
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 #endif
 
 
 #if TRACKTION_BENCHMARKS && ENGINE_BENCHMARKS_AUDIOFILECACHE
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
-class JUCEBufferingAudioReaderWrapper   : public FallbackReader
+class JUCEBufferingAudioReaderWrapper   : public AudioFormatReaderWithTimeout
 {
 public:
     JUCEBufferingAudioReaderWrapper (std::unique_ptr<juce::BufferingAudioReader> sourceReader)
@@ -106,7 +100,7 @@ private:
 
 
 //==============================================================================
-class TracktionBufferedFileReader   : public FallbackReader
+class TracktionBufferedFileReader   : public AudioFormatReaderWithTimeout
 {
 public:
     TracktionBufferedFileReader (std::unique_ptr<BufferedFileReader> sourceReader)
@@ -267,8 +261,8 @@ private:
 
                 cacheReader->setReadPosition (sourceStartSample);
                 cacheReader->readSamples (blockSize,
-                                          destBuffer, juce::AudioChannelSet::stereo(),
-                                          0, juce::AudioChannelSet::stereo(), 5'000);
+                                          destBuffer, ChannelConfiguration::stereo(),
+                                          0, ChannelConfiguration::stereo(), 5'000);
             }
 
             BenchmarkList::getInstance().addResult (bm.getResult());
@@ -281,7 +275,7 @@ private:
             auto cacheReader = engine.getAudioFileManager().cache.createReader (af,
                                                                                 [] (juce::AudioFormatReader* sourceReader,
                                                                                     juce::TimeSliceThread& timeSliceThread,
-                                                                                    int samplesToBuffer) -> std::unique_ptr<FallbackReader>
+                                                                                    int samplesToBuffer) -> std::unique_ptr<AudioFormatReaderWithTimeout>
                                                                                 {
                                                                                      return std::make_unique<JUCEBufferingAudioReaderWrapper> (std::make_unique<juce::BufferingAudioReader> (sourceReader,
                                                                                                                                                                                              timeSliceThread,
@@ -301,8 +295,8 @@ private:
 
                 cacheReader->setReadPosition (sourceStartSample);
                 cacheReader->readSamples (blockSize,
-                                          destBuffer, juce::AudioChannelSet::stereo(),
-                                          0, juce::AudioChannelSet::stereo(), 5'000);
+                                          destBuffer, ChannelConfiguration::stereo(),
+                                          0, ChannelConfiguration::stereo(), 5'000);
             }
 
             BenchmarkList::getInstance().addResult (bm.getResult());
@@ -315,7 +309,7 @@ private:
 //            auto cacheReader = engine.getAudioFileManager().cache.createReader (af,
 //                                                                                [] (juce::AudioFormatReader* sourceReader,
 //                                                                                    juce::TimeSliceThread& timeSliceThread,
-//                                                                                    int samplesToBuffer) -> std::unique_ptr<FallbackReader>
+//                                                                                    int samplesToBuffer) -> std::unique_ptr<AudioFormatReaderWithTimeout>
 //                                                                                {
 //                                                                                     return std::make_unique<TracktionBufferedFileReader> (std::make_unique<BufferedFileReader> (sourceReader,
 //                                                                                                                                                                                 timeSliceThread,
@@ -335,8 +329,8 @@ private:
 //
 //                cacheReader->setReadPosition (sourceStartSample);
 //                cacheReader->readSamples (blockSize,
-//                                          destBuffer, juce::AudioChannelSet::stereo(),
-//                                          0, juce::AudioChannelSet::stereo(), 5'000);
+//                                          destBuffer, ChannelConfiguration::stereo(),
+//                                          0, ChannelConfiguration::stereo(), 5'000);
 //            }
 //
 //            BenchmarkList::getInstance().addResult (bm.getResult());
@@ -351,7 +345,7 @@ private:
             auto cacheReader = engine.getAudioFileManager().cache.createReader (af,
                                                                                 [&] (juce::AudioFormatReader*,
                                                                                      juce::TimeSliceThread&,
-                                                                                     int) -> std::unique_ptr<FallbackReader>
+                                                                                     int) -> std::unique_ptr<AudioFormatReaderWithTimeout>
                                                                                 {
                                                                                      return std::make_unique<MemoryMappedFileReader> (std::move (mappedFileAndReader));
                                                                                 });
@@ -369,8 +363,8 @@ private:
 
                 cacheReader->setReadPosition (sourceStartSample);
                 cacheReader->readSamples (blockSize,
-                                          destBuffer, juce::AudioChannelSet::stereo(),
-                                          0, juce::AudioChannelSet::stereo(), 5'000);
+                                          destBuffer, ChannelConfiguration::stereo(),
+                                          0, ChannelConfiguration::stereo(), 5'000);
             }
 
             BenchmarkList::getInstance().addResult (bm.getResult());
@@ -383,7 +377,7 @@ private:
             auto cacheReader = engine.getAudioFileManager().cache.createReader (af,
                                                                                 [] (juce::AudioFormatReader* sourceReader,
                                                                                     juce::TimeSliceThread& timeSliceThread,
-                                                                                    int samplesToBuffer) -> std::unique_ptr<FallbackReader>
+                                                                                    int samplesToBuffer) -> std::unique_ptr<AudioFormatReaderWithTimeout>
                                                                                 {
                                                                                      return std::make_unique<JUCEBufferingAudioReaderWrapper> (std::make_unique<juce::BufferingAudioReader> (sourceReader,
                                                                                                                                                                                              timeSliceThread,
@@ -403,8 +397,8 @@ private:
 
                 cacheReader->setReadPosition (sourceStartSample);
                 cacheReader->readSamples (numThisTime,
-                                          destBuffer, juce::AudioChannelSet::stereo(),
-                                          0, juce::AudioChannelSet::stereo(), 5'000);
+                                          destBuffer, ChannelConfiguration::stereo(),
+                                          0, ChannelConfiguration::stereo(), 5'000);
             }
 
             BenchmarkList::getInstance().addResult (bm.getResult());
@@ -417,7 +411,7 @@ private:
 //            auto cacheReader = engine.getAudioFileManager().cache.createReader (af,
 //                                                                                [] (juce::AudioFormatReader* sourceReader,
 //                                                                                    juce::TimeSliceThread& timeSliceThread,
-//                                                                                    int samplesToBuffer) -> std::unique_ptr<FallbackReader>
+//                                                                                    int samplesToBuffer) -> std::unique_ptr<AudioFormatReaderWithTimeout>
 //                                                                                {
 //                                                                                     return std::make_unique<TracktionBufferedFileReader> (std::make_unique<BufferedFileReader> (sourceReader,
 //                                                                                                                                                                                 timeSliceThread,
@@ -438,8 +432,8 @@ private:
 //
 //                cacheReader->setReadPosition (sourceStartSample);
 //                cacheReader->readSamples (numThisTime,
-//                                          destBuffer, juce::AudioChannelSet::stereo(),
-//                                          0, juce::AudioChannelSet::stereo(), 5'000);
+//                                          destBuffer, ChannelConfiguration::stereo(),
+//                                          0, ChannelConfiguration::stereo(), 5'000);
 //            }
 //
 //            BenchmarkList::getInstance().addResult (bm.getResult());
@@ -449,6 +443,6 @@ private:
 
 static AudioFileCacheBenchmarks audioFileCacheBenchmarks;
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 #endif

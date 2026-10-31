@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 MackieMCU::MackieMCU (ExternalControllerManager& ecm)  : ControlSurface (ecm)
 {
@@ -351,7 +350,7 @@ void MackieMCU::acceptMidiMessageInt (int deviceIndex, const juce::MidiMessage& 
     else if (d[0] >= 0xe0 && d[0] <= 0xe8)
     {
         // fader
-        const float pos = juce::jlimit (0.0f, 1.0f, ((((int)d[2]) << 7) + d[1]) * (1.0f / 0x3f70));
+        const float pos = juce::jlimit (0.0f, 1.0f, static_cast<float> (((((int)d[2]) << 7) + d[1])) * (1.0f / 0x3f70));
 
         // send it back to the MCU
         sendMidiCommandToController (deviceIndex, d, 3);
@@ -1285,14 +1284,18 @@ void MackieMCU::faderBankChanged (int newStartChannelNumber, const juce::StringA
     }
 }
 
-void MackieMCU::channelLevelChanged (int channelNum_, float l , float r)
+void MackieMCU::channelLevelChanged (int channelNum_, std::span<const float> levels)
 {
     int channel = channelNum_ % 8;
     int dev     = channelNum_ / 8;
 
     if (assignmentMode == PanMode)
     {
-        auto newValue = (uint8_t) juce::jlimit (0, 13, juce::roundToInt (13.0f * std::max (l, r)));
+        float peak = 0.0f;
+        for (auto v : levels)
+            peak = std::max (peak, v);
+
+        auto newValue = (uint8_t) juce::jlimit (0, 13, juce::roundToInt (13.0f * peak));
 
         if (lastChannelLevels[channelNum_] != newValue)
         {
@@ -1307,7 +1310,7 @@ void MackieMCU::channelLevelChanged (int channelNum_, float l , float r)
     }
 }
 
-void MackieMCU::masterLevelsChanged (float, float)
+void MackieMCU::masterLevelsChanged (std::span<const float>)
 {
 }
 
@@ -1478,4 +1481,4 @@ void MackieMCU::undoStatusChanged (bool undo, bool redo)
     lightUpButton (deviceIdx, 0x4f, redo);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

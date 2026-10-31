@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -21,7 +20,7 @@ public:
     //==============================================================================
     using Ptr = juce::ReferenceCountedObjectPtr<EditSnapshot>;
 
-    static Ptr getEditSnapshot (Engine&, ProjectItemID);
+    static Ptr getEditSnapshot (Engine&, juce::File);
 
     //==============================================================================
     struct Marker
@@ -33,9 +32,6 @@ public:
 
     //==============================================================================
     ~EditSnapshot();
-
-    /** Returns the ProjectItemID. */
-    ProjectItemID getID() const noexcept                { return itemID; }
 
     /** Returns the File if this was created from one. */
     juce::File getFile() const                          { return sourceFile; }
@@ -58,11 +54,11 @@ public:
     /** Returns true if the current source is a valid Edit. */
     bool isValid() const;
 
-    /** Looks in the ProjectManager for the relevant ProjectItem and updates it's state to reflect this. */
-    void refreshFromProjectManager();
-
     /** Refreshes the cached properties and calls any listeners. */
     void refreshCacheAndNotifyListeners();
+
+    /** Full refresh reloading from the source file. */
+    void refresh();
 
     /** deals only with snapshots so it's relatively fast. */
     juce::ReferenceCountedArray<EditSnapshot> getNestedEditObjects();
@@ -93,8 +89,8 @@ public:
 
     const juce::Array<Marker>& getMarkers() const                       { return markers; }
     const juce::Array<EditItemID>& getTracks() const                    { return trackIDs; }
-    const juce::Array<ProjectItemID>& getEditClips() const              { return editClipIDs; }
-    const juce::Array<ProjectItemID>& getClipsSourceIDs() const         { return clipSourceIDs; }
+    const juce::Array<juce::File>& getEditClips() const                 { return editClipRefs; }
+    const juce::Array<juce::File>& getClipsSourceRefs() const           { return clipSourceRefs; }
     HashCode getHash() const                                            { return lastSaveTime.toMilliseconds(); }
 
     //==============================================================================
@@ -114,7 +110,7 @@ private:
     struct ListHolder;
     std::unique_ptr<ListHolder> listHolder;
 
-    ProjectItemID itemID;
+    Project::Ptr project;
     juce::File sourceFile;
     juce::ValueTree state;
     juce::Time lastSaveTime;
@@ -125,8 +121,8 @@ private:
     juce::BigInteger audioTracks, mutedTracks, soloedTracks, soloIsolatedTracks;
 
     juce::Array<EditItemID> trackIDs;
-    juce::Array<ProjectItemID> editClipIDs, clipSourceIDs;
-    double length = 0.0, markIn = 0.0, markOut = 0.0, tempo = 0.0;
+    juce::Array<juce::File> editClipRefs, clipSourceRefs;
+    double length = 0.0, maxClipEnd = 0.0, markIn = 0.0, markOut = 0.0, tempo = 0.0;
     bool marksActive = false;
     int timeSigNumerator = 4, timeSigDenominator = 4, pitch = 60;
     juce::Array<Marker> markers;
@@ -134,8 +130,7 @@ private:
     juce::ListenerList<Listener> listeners;
 
     //==============================================================================
-    EditSnapshot (Engine&, ProjectItemID);
-    void refreshFromProjectItem (ProjectItem::Ptr);
+    EditSnapshot (Engine&, juce::File);
     void refreshFromXml (const juce::XmlElement&, const juce::String&, double newLength);
     void refreshFromState();
     void clear();
@@ -147,4 +142,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EditSnapshot)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

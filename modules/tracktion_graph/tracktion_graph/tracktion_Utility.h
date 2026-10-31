@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace graph
-{
+namespace tracktion::inline graph {
 
 //==============================================================================
 //==============================================================================
@@ -19,7 +18,7 @@ namespace tracktion { inline namespace graph
 template<typename IntType>
 constexpr double sampleToTime (IntType samplePosition, double sampleRate)
 {
-    return samplePosition / sampleRate;
+    return (double) samplePosition / sampleRate;
 }
 
 /** Converts a time in seconds to a sample number. */
@@ -110,4 +109,4 @@ NodeType* findNodeWithIDIfNonZero (NodeGraph* nodeGraph, size_t nodeIDToLookFor)
                 : findNodeWithID<NodeType> (*nodeGraph, nodeIDToLookFor);
 }
 
-}}
+}

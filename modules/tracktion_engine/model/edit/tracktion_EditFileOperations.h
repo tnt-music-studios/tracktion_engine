@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -23,9 +22,12 @@ public:
 
     juce::File getEditFile() const;
 
-    bool save (bool warnOfFailure, bool forceSaveEvenIfNotModified, bool offerToDiscardChanges);
-    bool saveAs (const juce::File&, bool forceOverwriteExisting = false);
-    bool saveAs();
+    void save (bool warnOfFailure, bool forceSaveEvenIfNotModified, bool offerToDiscardChanges,
+               std::function<void (bool)> callback = nullptr);
+
+    void saveAs (const juce::File&, bool forceOverwriteExisting, std::function<void (bool)> callback);
+    void saveAs (const juce::File& f)   { saveAs (f, false, nullptr); }
+    void saveAs();
 
     bool writeToFile (const juce::File&, bool writeQuickBinaryVersion);
 
@@ -51,20 +53,25 @@ private:
 //==============================================================================
 /** Loads an edit from a file, ready for playback / editing */
 std::unique_ptr<Edit> loadEditFromFile (Engine&, const juce::File&,
-                                        Edit::EditRole role = Edit::EditRole::forEditing);
+                                        Edit::EditRole role = Edit::EditRole::forEditing,
+                                        Edit::LoadContext* = nullptr);
 
 /** Loads an edit from a ValueTree, ready for playback / editing */
 std::unique_ptr<Edit> loadEditFromState (Engine&, const juce::ValueTree&,
-                                         Edit::EditRole role = Edit::EditRole::forEditing);
+                                         Edit::EditRole role = Edit::EditRole::forEditing,
+                                         Edit::LoadContext* = nullptr);
 
 /** Creates a new edit for a file, ready for playback / editing */
 std::unique_ptr<Edit> createEmptyEdit (Engine&, const juce::File&);
 
 /** Uses the ProjectManager to find an Edit file and load it as a ValueTree. */
-juce::ValueTree loadEditFromProjectManager (ProjectManager&, ProjectItemID);
+juce::ValueTree loadEditFromProjectManager (ProjectManager&, ProjectItemRef);
 
-/** Uses the ProjectManager to find an Edit file and open it. */
-std::unique_ptr<Edit> loadEditForExamining (ProjectManager&, ProjectItemID,
+/** Uses the ProjectManager to find an Edit file and open it.
+    If the ref is ID-based, looks up via ProjectManager.
+    If the ref is path-based with an owner project, resolves the file directly.
+*/
+std::unique_ptr<Edit> loadEditForExamining (ProjectManager&, ProjectItemRef,
                                             Edit::EditRole role = Edit::EditRole::forExamining,
                                             Edit::LoadContext* = nullptr);
 
@@ -72,7 +79,7 @@ std::unique_ptr<Edit> loadEditForExamining (ProjectManager&, ProjectItemID,
     Loads a ValueTree from a file to load an Edit.
     If the file is empty, a new Edit state will be created with the given ProjectItemID.
 */
-juce::ValueTree loadEditFromFile (Engine&, const juce::File&, ProjectItemID);
+juce::ValueTree loadEditFromFile (Engine&, const juce::File&, ProjectItemRef);
 
 /** Legacy, will be deprecated soon. Use version that returns an edit.
     Creates an empty Edit with no project. */
@@ -85,4 +92,4 @@ juce::ValueTree updateLegacyEdit (const juce::ValueTree&);
 void updateLegacyEdit (juce::XmlElement& editXML);
 
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

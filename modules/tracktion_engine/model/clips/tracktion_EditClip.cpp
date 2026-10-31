@@ -8,17 +8,16 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
-EditClip::EditClip (const juce::ValueTree& v, EditItemID clipID, ClipOwner& targetParent, ProjectItemID sourceEditID)
+EditClip::EditClip (const juce::ValueTree& v, EditItemID clipID, ClipOwner& targetParent, ProjectItemRef sourceEditRef)
     : AudioClipBase (v, clipID, Type::edit, targetParent),
       waveInfo (getAudioFile().getInfo())
 {
     renderOptions = RenderOptions::forEditClip (*this);
 
     sourceIdUpdater.setFunction ([this] { sourceMediaChanged(); });
-    sourceFileReference.setToProjectFileReference (sourceEditID);
+    sourceFileReference.setToProjectFileReference (sourceEditRef);
 
     auto um = getUndoManager();
     copyColourFromMarker.referTo (state, IDs::copyColour, um, false);
@@ -53,7 +52,10 @@ void EditClip::initialise()
     if (! renderEnabled)
         setUsesProxy (false);
 
-    sourceIdUpdater.triggerAsyncUpdate();
+    if (edit.isLoading())
+        editLoadedCallback = std::make_unique<Edit::LoadFinishedCallback<EditClip>> (*this, edit);
+    else
+        sourceIdUpdater.triggerAsyncUpdate();
 }
 
 void EditClip::cloneFrom (Clip* c)
@@ -113,7 +115,7 @@ RenderManager::Job::Ptr EditClip::getRenderJob (const AudioFile& destFile)
 
     auto j = EditRenderJob::getOrCreateRenderJob (edit.engine,
                                                   destFile, *renderOptions,
-                                                  sourceFileReference.getSourceProjectItemID(),
+                                                  sourceFileReference.getSourceProjectItemRef(),
                                                   true, getIsReversed());
     j->setName (TRANS("Creating Edit Clip") + ": " + getName());
 
@@ -154,7 +156,7 @@ juce::String EditClip::getRenderMessage()
 
 juce::String EditClip::getClipMessage()
 {
-    if (! sourceFileReference.getSourceProjectItemID().isValid())
+    if (! sourceFileReference.getSourceProjectItemRef().isValid())
         return TRANS("No source set");
 
     if (renderOptions->getNumTracks() == 0)
@@ -174,17 +176,17 @@ void EditClip::sourceMediaChanged()
 
     const juce::ScopedValueSetter<bool> svs (sourceMediaReEntrancyCheck, true);
 
-    auto newID = sourceFileReference.getSourceProjectItemID();
+    auto newRef = sourceFileReference.getSourceProjectItemRef();
 
     // Check this here because when any ProjectItem in this project gets changed the Edit will call
     // sendSourceFileUpdate bypassing the usual check in setSourceProjectItemID
-    if (isInitialised && lastSourceId == newID)
+    if (isInitialised && lastSourceRef == newRef)
         return;
 
-    const bool resetTracksToDefault = (! edit.isLoading() && ! lastSourceId.isValid());
+    const bool resetTracksToDefault = (! edit.isLoading() && ! lastSourceRef.isValid());
 
-    lastSourceId = newID;
-    editSnapshot = EditSnapshot::getEditSnapshot (edit.engine, newID);
+    lastSourceRef = newRef;
+    editSnapshot = EditSnapshot::getEditSnapshot (edit.engine, sourceFileReference.getFile());
     const bool invalidSource = editSnapshot == nullptr || ! editSnapshot->isValid();
 
     if (invalidSource)
@@ -276,7 +278,10 @@ void EditClip::updateWaveInfo()
     waveInfo = getAudioFile().getInfo();
     waveInfo.bitsPerSample      = renderOptions->getBitDepth();
     waveInfo.sampleRate         = renderOptions->getSampleRate();
-    waveInfo.numChannels        = renderOptions->getStereo() ? 2 : 1;
+    {
+        auto cc = renderOptions->getChannelConfiguration();
+        waveInfo.numChannels    = cc.isEmpty() ? 2 : cc.getNumChannels();
+    }
     waveInfo.lengthInSamples    = static_cast<SampleCount> (sourceLength * waveInfo.sampleRate);
 
     updateLoopInfoBasedOnSource (false);
@@ -305,6 +310,12 @@ HashCode EditClip::generateHash()
     }
 
     return newHash;
+}
+
+void EditClip::editFinishedLoading()
+{
+    sourceIdUpdater.triggerAsyncUpdate();
+    editLoadedCallback.reset();
 }
 
 void EditClip::setTracksToRender (const juce::Array<EditItemID>& trackIDs)
@@ -360,6 +371,9 @@ void EditClip::updateReferencedEdits()
 void EditClip::updateLoopInfoBasedOnSource (bool updateLength)
 {
     if (editSnapshot == nullptr || ! editSnapshot->isValid())
+        return;
+
+    if (getSourceLength() <= 0.01_td)
         return;
 
     // first try and get info from the source edit
@@ -444,4 +458,4 @@ void EditClip::editChanged (EditSnapshot&)
     generateHash();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

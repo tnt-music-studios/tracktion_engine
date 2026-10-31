@@ -11,26 +11,38 @@
 // Defined in tracktion_core
 #define TRACKTION_UNIT_TESTS_TIME                       1
 #define TRACKTION_UNIT_TESTS_ALGORITHM                  1
+#define TRACKTION_UNIT_TESTS_HASH                       1
 
 // Defined in tracktion_engine
+#define GRAPH_UNIT_TESTS_CHANNELREMAPPINGNODE           1
 #define GRAPH_UNIT_TESTS_WAVENODE                       1
 #define GRAPH_UNIT_TESTS_MIDINODE                       1
 #define GRAPH_UNIT_TESTS_RACKNODE                       1
 #define GRAPH_UNIT_TESTS_EDITNODE                       1
 
+#define ENGINE_UNIT_TESTS_AUDIOCLIPBASE_CHANNELS        1
+#define ENGINE_UNIT_TESTS_AUDIOCLIPBASE_LOOPING         1
 #define ENGINE_UNIT_TESTS_AUTOMATION                    1
 #define ENGINE_UNIT_TESTS_AUTOMATION_CURVE_LIST         1
 #define ENGINE_UNIT_TESTS_AUX_SEND                      1
+#define ENGINE_UNIT_TESTS_BACKGROUND_JOBS               1
+#define ENGINE_UNIT_TESTS_CHANNELCONFIGURATION          1
 #define ENGINE_UNIT_TESTS_CLICKNODE                     1
+#define ENGINE_UNIT_TESTS_CLIPEFFECTS                   1
 #define ENGINE_UNIT_TESTS_CLIPBOARD                     1
+#define ENGINE_UNIT_TESTS_CLIP_DEFAULTS                 1
 #define ENGINE_UNIT_TESTS_CLIPSLOT                      1
+#define ENGINE_UNIT_TESTS_CLIP_LAUNCHER                 1
+#define ENGINE_UNIT_TESTS_COMP_MANAGER                  1
 #define ENGINE_UNIT_TESTS_CONSTRAINED_CACHED_VALUE      1
 #define ENGINE_UNIT_TESTS_DAWPROJECT                    1
 #define ENGINE_UNIT_TESTS_DELAY_PLUGIN                  1
 #define ENGINE_UNIT_TESTS_EDIT                          1
+#define ENGINE_UNIT_TESTS_EDIT_UTILITIES                1
 #define ENGINE_UNIT_TESTS_EDITCLIP                      1
 #define ENGINE_UNIT_TESTS_EDIT_LOADER                   1
 #define ENGINE_UNIT_TESTS_EDIT_TIME                     1
+#define ENGINE_UNIT_TESTS_EXTERNAL_CONTROLLER           1
 #define ENGINE_UNIT_TESTS_FREEZE                        1
 #define ENGINE_UNIT_TESTS_FOLLOW_ACTIONS                1
 #define ENGINE_UNIT_TESTS_LATENCY                       1
@@ -41,22 +53,35 @@
 #define ENGINE_UNIT_TESTS_LOOP_INFO                     1
 #define ENGINE_UNIT_TESTS_MIDILIST                      1
 #define ENGINE_UNIT_TESTS_MODIFIERS                     1
+#define ENGINE_UNIT_TESTS_OSCILLATORS                   1
 #define ENGINE_UNIT_TESTS_PAN_LAW                       1
+#define ENGINE_UNIT_TESTS_PATCHBAY                     1
 #define ENGINE_UNIT_TESTS_PLAYBACK                      1
 #define ENGINE_UNIT_TESTS_PLUGINS                       1
 #define ENGINE_UNIT_TESTS_PDC                           1
 #define ENGINE_UNIT_TESTS_RACKINSTANCE                  1
 #define ENGINE_UNIT_TESTS_RECORDING                     1
 #define ENGINE_UNIT_TESTS_RENDERING                     1
+#define ENGINE_UNIT_TESTS_RENDER_QUEUE                  1
+#define ENGINE_UNIT_TESTS_RENDER_SPECIFICATION          1
 #define ENGINE_UNIT_TESTS_TIMESTRETCHER                 1
 #define ENGINE_UNIT_TESTS_CLIPS                         1
 #define ENGINE_UNIT_TESTS_SELECTABLE                    1
+#define ENGINE_UNIT_TESTS_SOURCE_FILE_REFERENCE         1
+#define ENGINE_UNIT_TESTS_AUDIO_FIFO                    1
 #define ENGINE_UNIT_TESTS_AUDIO_FILE                    1
+#define ENGINE_UNIT_TESTS_AUDIO_FILE_ANALYSER           1
 #define ENGINE_UNIT_TESTS_AUDIO_FILE_CACHE              1
+#define ENGINE_UNIT_TESTS_LOUDNESS_METER                1
+#define ENGINE_UNIT_TESTS_STEREO_FIELD_ANALYSER         1
+#define ENGINE_UNIT_TESTS_EXTERNALPLUGIN                1
 #define ENGINE_UNIT_TESTS_VOLPANPLUGIN                  1
+#define ENGINE_UNIT_TESTS_LEVELMETERPLUGIN              1
 #define ENGINE_UNIT_TESTS_TEMPO_SEQUENCE                1
 #define ENGINE_UNIT_TESTS_QUANTISATION_TYPE             1
 #define ENGINE_UNIT_TESTS_WAVE_INPUT_DEVICE             1
+#define ENGINE_UNIT_TESTS_WAVE_OUTPUT_DEVICE            1
+#define ENGINE_UNIT_TESTS_WAVENODE_CHANNEL_ROUTING      1
 #define ENGINE_UNIT_TESTS_WAVENODE_READAHEAD            1
 #define ENGINE_UNIT_TESTS_PROJECT                       1
 
@@ -71,6 +96,7 @@
 #define GRAPH_UNIT_TESTS_AUDIOBUFFERPOOL                1
 #define GRAPH_UNIT_TESTS_SEMAPHORE                      1
 #define GRAPH_UNIT_TESTS_ALLOCATION                     1
+#define GRAPH_UNIT_TESTS_LOCKFREENODEPLAYER             1
 
 // Benchmarks
 #define CORE_BENCHMARKS_TEMPO                           1

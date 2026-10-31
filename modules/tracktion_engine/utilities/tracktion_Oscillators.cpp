@@ -7,8 +7,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 inline int oddEven (int x)
@@ -26,9 +25,9 @@ static float triangle (float phase, float freq, double sampleRate)
 {
     float sum = 0;
     int k = 1;
-    while (freq * k < sampleRate / 2)
+    while (freq * float (k) < sampleRate / 2)
     {
-        sum += std::pow (-1.0f, (k - 1.0f) / 2.0f) / (k * k) * std::sin (k * (phase * 2 * juce::MathConstants<float>::pi));
+        sum += std::pow (-1.0f, (float (k) - 1.0f) / 2.0f) / float (k * k) * std::sin (float (k) * (phase * 2 * juce::MathConstants<float>::pi));
         k += 2;
     }
     return float (8.0f / (juce::MathConstants<float>::pi * juce::MathConstants<float>::pi) * sum);
@@ -38,9 +37,9 @@ static float sawUp (float phase, float freq, double sampleRate)
 {
     float sum = 0;
     int k = 1;
-    while (freq * k < sampleRate / 2)
+    while (freq * float (k) < sampleRate / 2)
     {
-        sum += oddEven (k) * std::sin (k * (phase * 2 * juce::MathConstants<float>::pi)) / k;
+        sum += float (oddEven (k)) * std::sin (float (k) * (phase * 2 * juce::MathConstants<float>::pi)) / float (k);
         k++;
     }
     return float (-2.0f / juce::MathConstants<float>::pi * sum);
@@ -50,9 +49,9 @@ static float sawDown (float phase, float freq, double sampleRate)
 {
     float sum = 0;
     int k = 1;
-    while (freq * k < sampleRate / 2)
+    while (freq * float (k) < sampleRate / 2)
     {
-        sum += oddEven (k) * std::sin (k * (phase * 2 * juce::MathConstants<float>::pi)) / k;
+        sum += float (oddEven (k)) * std::sin (float (k) * (phase * 2 * juce::MathConstants<float>::pi)) / float (k);
         k++;
     }
     return float (2.0f / juce::MathConstants<float>::pi * sum);
@@ -61,8 +60,7 @@ static float sawDown (float phase, float freq, double sampleRate)
 //==============================================================================
 void Oscillator::start()
 {
-    static juce::Random r;
-    phase = r.nextFloat();
+    phase = random.nextFloat();
 }
 
 void Oscillator::setSampleRate (double sr)
@@ -204,11 +202,9 @@ MultiVoiceOscillator::MultiVoiceOscillator (int maxVoices)
 
 void MultiVoiceOscillator::start()
 {
-    static juce::Random r;
-
     for (int i = 0; i < oscillators.size(); i += 2)
     {
-        float phase = r.nextFloat();
+        const float phase = random.nextFloat();
         oscillators[i + 0]->start (phase);
         oscillators[i + 1]->start (phase);
     }
@@ -281,7 +277,7 @@ void MultiVoiceOscillator::process (juce::AudioBuffer<float>& buffer, int startS
 
             auto& o = *oscillators[i];
 
-            o.setGain (gain * panGain / voices);
+            o.setGain (gain * panGain / float (voices));
             o.setNote (note);
             o.process (channelBuffer, 0, numSamples);
         }
@@ -297,7 +293,7 @@ void MultiVoiceOscillator::process (juce::AudioBuffer<float>& buffer, int startS
             float rightGain = 1.0f + localPan;
 
             float base = note - detune / 2;
-            float delta = detune / (voices - 1);
+            float delta = detune / float (voices - 1);
             bool left = (i % 2) == 0;
             float panGain = left ? leftGain : rightGain;
 
@@ -308,8 +304,8 @@ void MultiVoiceOscillator::process (juce::AudioBuffer<float>& buffer, int startS
 
             auto& o = *oscillators[i];
 
-            o.setGain (gain * panGain / voices);
-            o.setNote (base + delta * (i / 2));
+            o.setGain (gain * panGain / float (voices));
+            o.setNote (base + delta * float (i / 2));
             o.process (channelBuffer, 0, numSamples);
         }
     }
@@ -339,7 +335,7 @@ BandlimitedWaveLookupTables::BandlimitedWaveLookupTables (double sr, int tableSi
 
     auto start = juce::Time::getCurrentTime();
 
-    for (float note = tablePerNumNotes + 0.5f; note < 127; note += tablePerNumNotes)
+    for (float note = float (tablePerNumNotes) + 0.5f; note < 127; note += float (tablePerNumNotes))
     {
         const float freq = getMidiNoteInHertz (note);
 
@@ -364,4 +360,4 @@ BandlimitedWaveLookupTables::~BandlimitedWaveLookupTables()
     tableCache.removeFirstMatchingValue (this);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

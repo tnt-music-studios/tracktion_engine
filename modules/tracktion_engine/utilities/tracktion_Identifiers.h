@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace IDs
 {
@@ -35,6 +34,7 @@ namespace IDs
     DECLARE_ID (VIDEO)
     DECLARE_ID (videoOffset)
     DECLARE_ID (level)
+    DECLARE_ID (alwaysUseRelativePaths)
     DECLARE_ID (automationLocked)
     DECLARE_ID (recordPunchInOut)
     DECLARE_ID (endToEnd)
@@ -165,7 +165,6 @@ namespace IDs
     DECLARE_ID (windowPos)
     DECLARE_ID (windowX)
     DECLARE_ID (windowY)
-    DECLARE_ID (windowLocked)
     DECLARE_ID (src)
     DECLARE_ID (dst)
     DECLARE_ID (srcPin)
@@ -190,6 +189,13 @@ namespace IDs
     DECLARE_ID (leftOutDb)
     DECLARE_ID (rightFrom)
     DECLARE_ID (rightOutDb)
+    DECLARE_ID (CHANNELMAP)
+    DECLARE_ID (inputTo)
+    DECLARE_ID (outputFrom)
+    DECLARE_ID (inputGain)
+    DECLARE_ID (outputGain)
+    DECLARE_ID (numInputChannels)
+    DECLARE_ID (numOutputChannels)
     DECLARE_ID (panLaw)
     DECLARE_ID (busNum)
     DECLARE_ID (auxSendSliderPos)
@@ -209,6 +215,7 @@ namespace IDs
     DECLARE_ID (polarity)
     DECLARE_ID (remapOnTempoChange)
     DECLARE_ID (quickParamName)
+    DECLARE_ID (customName)
     DECLARE_ID (masterPluginID)
     DECLARE_ID (sidechainSourceID)
     DECLARE_ID (startTime)
@@ -371,6 +378,11 @@ namespace IDs
     DECLARE_ID (araPluginID)
     DECLARE_ID (araPluginDescription)
     DECLARE_ID (araArchive)
+    DECLARE_ID (araArchiveSourceID)
+    DECLARE_ID (araArchiveModID)
+    DECLARE_ID (araDocumentArchiveID)
+    DECLARE_ID (araSourceID)
+    DECLARE_ID (araModID)
     DECLARE_ID (MELODYNEFILEREADER)
     DECLARE_ID (ARAFILEREADER)
     DECLARE_ID (ARADOCUMENT)
@@ -450,6 +462,7 @@ namespace IDs
     DECLARE_ID (renderCreateMidiFile)
     DECLARE_ID (renderFormat)
     DECLARE_ID (renderStereo)
+    DECLARE_ID (renderChannelConfig)
     DECLARE_ID (renderSampleRate)
     DECLARE_ID (renderBitDepth)
     DECLARE_ID (renderQualityIndex)
@@ -677,4 +690,4 @@ namespace IDs
     #undef DECLARE_ID
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

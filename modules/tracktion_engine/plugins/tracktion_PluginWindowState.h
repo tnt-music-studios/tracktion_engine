@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 struct PluginWindowState  : private juce::Timer
 {
@@ -56,7 +55,6 @@ struct PluginWindowState  : private juce::Timer
     Engine& engine;
     std::unique_ptr<juce::Component> pluginWindow;
     int windowShowerCount = 0;
-    bool windowLocked;
     bool temporarilyHidden = false;
     bool wasExplicitlyClosed = false;
     std::optional<juce::Rectangle<int>> lastWindowBounds;
@@ -72,4 +70,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE (PluginWindowState)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /** Describes the time and type of the speed fade in/outs.*/
@@ -48,8 +47,8 @@ public:
                        TimeRange loopSection,
                        LiveClipLevel,
                        double speedRatio,
-                       const juce::AudioChannelSet& sourceChannelsToUse,
-                       const juce::AudioChannelSet& destChannelsToFill,
+                       const ChannelConfiguration& sourceChannelsToUse,
+                       const ChannelConfiguration& destChannelsToFill,
                        ProcessState&,
                        EditItemID,
                        bool isOfflineRender,
@@ -76,7 +75,7 @@ private:
     LiveClipLevel clipLevel;
     juce::Range<int64_t> editPositionInSamples;
     double audioFileSampleRate = 0;
-    const juce::AudioChannelSet channelsToUse, destChannels;
+    const ChannelConfiguration channelsToUse, destChannels;
     AudioFileCache::Reader::Ptr reader;
 
     struct PerChannelState;
@@ -92,7 +91,7 @@ private:
     static double rescale (AudioFadeCurve::Type, double proportion, bool rampUp);
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 #ifndef DOXYGEN
 template<>

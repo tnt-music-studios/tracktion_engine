@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class SceneList;
 
@@ -147,6 +146,9 @@ public:
     /** Deletes a specific Scene. */
     void deleteScene (Scene&);
 
+    /** Moves a Scene to a new index, along with the ClipSlot at its index on every track. */
+    void moveScene (int currentIndex, int newIndex);
+
     juce::ValueTree state;  /**< The state of this SceneList. */
     Edit& edit;             /**< The Edit this SceneList belongs to. */
 
@@ -170,4 +172,4 @@ private:
     void objectOrderChanged() override;
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

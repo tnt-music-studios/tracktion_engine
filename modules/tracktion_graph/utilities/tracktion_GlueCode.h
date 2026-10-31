@@ -10,10 +10,9 @@
 
 #pragma once
 
-#include "../../3rd_party/choc/audio/choc_MIDISequence.h"
+#include "../../3rd_party/choc/choc/audio/choc_MIDISequence.h"
 
-namespace tracktion { inline namespace graph
-{
+namespace tracktion::inline graph {
 
 //==============================================================================
 /** Creates a juce::AudioBuffer from a choc::buffer::BufferView. */
@@ -151,7 +150,7 @@ static void addApplyingGainRamp (DestBuffer&& dest, const SourceBuffer& source, 
     auto size = source.getSize();
     CHOC_ASSERT (size == dest.getSize());
 
-    const auto delta = (endGain - startGain) / size.numFrames;
+    const auto delta = (endGain - startGain) / static_cast<float> (size.numFrames);
 
     for (decltype (size.numChannels) chan = 0; chan < size.numChannels; ++chan)
     {
@@ -197,8 +196,7 @@ static void copyIfNotAliased (DestBuffer&& dest, const SourceBuffer& source)
 
 }
 
-}} // namespace tracktion
-
+} // namespace tracktion::inline graph
 #ifndef DOXYGEN
 template<>
 struct std::hash<juce::MidiMessageSequence>

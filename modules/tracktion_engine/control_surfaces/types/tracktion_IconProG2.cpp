@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 IconProG2::IconProG2 (ExternalControllerManager& ecm)  : MackieMCU (ecm)
 {
@@ -67,7 +66,7 @@ void IconProG2::acceptMidiMessageInt (int deviceIndex, const juce::MidiMessage& 
     else if (d[0] >= 0xe0 && d[0] <= 0xe8)
     {
         // fader
-        const float pos = juce::jlimit (0.0f, 1.0f, ((((int)d[2]) << 7) + d[1]) * (1.0f / 0x3f70));
+        const float pos = juce::jlimit (0.0f, 1.0f, static_cast<float> (((((int)d[2]) << 7) + d[1])) * (1.0f / 0x3f70));
 
         // send it back to the MCU
         sendMidiCommandToController (deviceIndex, d, 3);
@@ -524,4 +523,4 @@ void IconProG2::setAssignmentMode (AssignmentMode newMode)
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

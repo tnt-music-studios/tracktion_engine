@@ -11,8 +11,7 @@
 #pragma once
 
 
-namespace tracktion { inline namespace graph
-{
+namespace tracktion::inline graph {
 
 /**
     Simple player for an Node.
@@ -140,9 +139,9 @@ protected:
 
         if (splitTimelineRange.isSplit)
         {
-            const auto firstProportion = splitTimelineRange.timelineRange1.getLength() / (double) pc.referenceSampleRange.getLength();
+            const auto firstProportion = (double) splitTimelineRange.timelineRange1.getLength() / (double) pc.referenceSampleRange.getLength();
 
-            const auto firstReferenceRange  = pc.referenceSampleRange.withEnd (pc.referenceSampleRange.getStart() + (int64_t) std::llround (pc.referenceSampleRange.getLength() * firstProportion));
+            const auto firstReferenceRange  = pc.referenceSampleRange.withEnd (pc.referenceSampleRange.getStart() + (int64_t) std::llround ((double) pc.referenceSampleRange.getLength() * firstProportion));
             const auto secondReferenceRange = juce::Range<int64_t> (firstReferenceRange.getEnd(), pc.referenceSampleRange.getEnd());
             jassert (firstReferenceRange.getLength() + secondReferenceRange.getLength() == pc.referenceSampleRange.getLength());
 
@@ -224,4 +223,4 @@ protected:
     }
 };
 
-}}
+}

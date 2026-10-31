@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -43,6 +42,9 @@ public:
     /** Inserts space in to a sequence, shifting all PitchSettings. */
     void insertSpaceIntoSequence (TimePosition, TimeDuration amountOfSpace, bool snapToBeat);
 
+    /** Removes a region from the sequence, shifting subsequent PitchSettings. */
+    void deleteRegion (TimeRange);
+
     void sortEvents();
 
     juce::ValueTree state;
@@ -60,4 +62,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PitchSequence)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

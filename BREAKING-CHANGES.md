@@ -3,6 +3,456 @@
 ___
 
 ### Change
+A clip whose playback file can't be read, and that isn't going to generate one, no longer gets a node in the playback graph.
+
+#### Possible Issues
+`createNodeForAudioClip` already returned no node for a null playback file; it now also returns none when the playback file is invalid and `AudioClipBase::isGeneratingPlaybackFile()` is false, i.e. the source has been deleted, moved or is unreadable and no proxy or source render is going to produce it. Such a clip is silent, as before, but it no longer appears in the graph at all, so code walking the graph won't find a node for it. A subclass that produces its playback file through a mechanism the engine doesn't know about should override `needsRender()`/`requiresRenderingSource()` so `isGeneratingPlaybackFile()` reports it, otherwise its clips will be dropped from the graph instead of waited for.
+
+#### Rationale
+`WaveNode::isReadyToProcess` returns false until its file can be read, which is how a render waits for proxies. For a source that will never appear that wait never ended, so `Renderer::renderToFile` retried forever with no error. Not building the node keeps the wait for files that really are coming and removes it for files that aren't.
+
+___
+
+### Change
+`EngineBehaviour::newClipAdded` is deprecated and replaced by `EngineBehaviour::newClipCreated`. It's now only called when a clip is created, and it's called later than before.
+
+#### Possible Issues
+`newClipAdded` used to be called from `ClipOwner::ClipList::newObjectAdded`, i.e. whenever a clip object was added outside undo/redo. That included moves through `Clip::moveTo` and `ClipSlot::setClip`, `duplicateClip`, clipboard paste and split. Both callbacks are now made from `insertClipWithState` only, so those cases no longer call either of them. They're also called after the engine's own clip defaults have been applied rather than during `addChild`, so an override that checks `Clip::getColour() == Clip::getDefaultColour()` now sees the colour the engine has already set. Overriding a deprecated virtual doesn't warn, so an app that overrides `newClipAdded` compiles unchanged and silently stops being called for moves, paste and split.
+
+#### Workaround
+Override `newClipCreated` instead. If you relied on being told about moves or copies, listen for the clip being added to its new owner instead, e.g. via `ClipOwner::clipAddedOrRemoved` or a `ValueTree::Listener` on the owner's state.
+
+#### Rationale
+Applying the defaults for a new clip to clips that were only moved or copied reset settings the user had chosen, e.g. a launcher clip's loop and tempo-remap settings when it was duplicated. Creating a clip and moving or copying one are now separate operations, and the callback follows the same split.
+
+___
+
+### Change
+`duplicateClip` now goes through the same insert path as everything else, so it respects `EditLimits::maxClipsInTrack`.
+
+#### Possible Issues
+It used to append the copy to the track's state unconditionally. It can now return `nullptr` when the track is full, and shows a warning message through `UIBehaviour::showWarningMessage`. Code that dereferences the result without checking, or that duplicates in a loop, can hit both.
+
+#### Workaround
+Check the returned pointer. If you need to duplicate without the limit or the message, copy the state yourself with `EditItemID::remapIDs` and add it to the owner's state.
+
+#### Rationale
+`duplicateClip` bypassed the clip-limit check that every other insert applies.
+
+___
+
+### Change
+`core::hash_combine` (and therefore `core::hash` and `core::hash_range`) uses a new mixing function, so every value it produces has changed.
+
+#### Possible Issues
+The old function was close to affine, so combining values that differed by small amounts (e.g. sequential `EditItemID`s) could produce identical results. This caused duplicate playback graph node IDs, which made nodes adopt state from the wrong node when the graph was rebuilt. Any hash values you have persisted or cached across runs (e.g. as cache keys or change-detection stamps) will no longer match the values produced by the new function. Within the engine, cached audio thumbnails will be regenerated and `PatternGenerator` note hashes stored in Edits are upgraded automatically on load.
+
+#### Workaround
+Treat previously stored hash values as stale and regenerate them. If you need to recognise values produced by the old function, its formula was `seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed * 65537u) + (seed / 3u)`.
+
+#### Rationale
+Node IDs and state hashes need a mixer where every input bit affects the output, otherwise structurally similar subgraphs collide.
+
+___
+
+### Change
+`toBitSet (const juce::Array<Track*>&)` now returns a bitset of only the tracks passed in.
+
+#### Possible Issues
+Previously it ignored its argument and set a bit for every track in the Edit, so anything built from it addressed the whole Edit. Code that passed a subset of tracks - most visibly `Renderer::Parameters::tracksToDo` and `Renderer::measureStatistics()` - will now render or measure just that subset instead of everything.
+
+#### Workaround
+Pass `getAllTracks (edit)` where the whole Edit really is wanted, or leave `Renderer::Parameters::tracksToDo` empty, which already means "all tracks".
+
+#### Rationale
+The function used its argument only to reach the Edit and then looped over every track, which contradicted its documented behaviour and silently broke subset rendering. See issue #399.
+
+___
+
+### Change
+`Plugin` has a new pure virtual method `getBusses()` which every subclass must implement.
+
+#### Possible Issues
+Custom `Plugin` subclasses will no longer compile until they implement `getBusses()`. The default implementation of `takesAudioInput()` has also changed from `! isSynth()` to `! isSynth() && ! getBusses().inputs.empty()`.
+
+#### Workaround
+Implement `getBusses()` returning a `Plugin::BusLayout` describing the plugin's inputs and outputs. Helpers cover the common cases: `BusLayout::singleStereoInOut()` for a typical stereo effect, `BusLayout::singleInOut (in, out)` for other fixed layouts, `BusLayout::singlePassThrough()` for plugins that pass through whatever they're given, and `{}` for MIDI-only plugins.
+
+#### Rationale
+Multichannel support requires every plugin to explicitly declare its channel requirements rather than the engine assuming stereo.
+
+___
+
+### Change
+`ExternalPlugin::getNumInputs()` and `getNumOutputs()` have been removed.
+
+#### Possible Issues
+Code calling these methods will no longer compile.
+
+#### Workaround
+Use `getBusses()` for main-bus channel counts, or `getAudioPluginInstance()->getTotalNumInputChannels()` / `getTotalNumOutputChannels()` for totals. A deprecated `getTotalNumInputChannels()` shim exists on `ExternalPlugin` for the input side.
+
+#### Rationale
+Part of the multichannel work: single input/output counts can't describe multi-bus plugins.
+
+___
+
+### Change
+The `DeviceManager` per-channel stereo-pair API has been removed. This includes `setWaveOutChannelsEnabled`, `setWaveInChannelsEnabled`, `setDeviceOutChannelStereo`, `setDeviceInChannelStereo`, `isDeviceOutChannelStereo`, `isDeviceInChannelStereo`, `isDeviceOutEnabled`, `isDeviceInEnabled`, `enableAllWaveInputs`, `enableAllWaveOutputs`, `setAllWaveInputsToStereoPair` and `setAllWaveOutputsToStereoPair`.
+
+#### Possible Issues
+Code managing device channels through these methods will no longer compile.
+
+#### Workaround
+Use the new device-centric API: `setDeviceEnabled (WaveInputDevice&/WaveOutputDevice&, bool)`, `setDeviceNumChannels (device, numChannels)`, `setAllWaveInputsToNumChannels()`, `setAllWaveOutputsToNumChannels()` and `getPossibleChannelGroupsForDevice()`. Whole configurations can be saved/restored with the new wave device layout preset API (`getCurrentWaveDeviceLayout()`, `applyWaveDeviceLayout()` etc.).
+
+#### Rationale
+Channel groupings are no longer limited to mono or stereo pairs; devices can now use groups of any size up to `maxNumChannelsPerDevice`.
+
+___
+
+### Change
+`WaveDeviceDescription` has been restructured around the new `ChannelConfiguration` class. Its `std::vector<ChannelIndex> channels` member is now a `ChannelConfiguration`, and the constructors taking left/right channel indices or a `ChannelIndex*` array have been removed. `ChannelIndex` has moved to `utilities/tracktion_ChannelConfiguration.h`, and the free functions `createDescriptionOfChannels()` and `createChannelSet()` have been removed.
+
+#### Possible Issues
+Custom `EngineBehaviour::describeWaveDevices()` implementations will no longer compile (the virtual's signature is unchanged, so the failure is in the body, not the override). Code using the removed free functions will also fail to compile.
+
+#### Workaround
+Construct descriptions with `WaveDeviceDescription (name, ChannelConfiguration, enabled)` or `WaveDeviceDescription::withNumChannels (name, firstChannelIndexInDevice, numChannels, enabled)`. Replace `createDescriptionOfChannels()` with `ChannelConfiguration::getDescription()` and `createChannelSet()` with `ChannelConfiguration::toChannelSet()`.
+
+#### Rationale
+Wave devices can now describe arbitrary channel layouts, not just mono/stereo.
+
+___
+
+### Change
+`InputDevice` and `OutputDevice` now share a common `IODevice` base class. Their constructors no longer take a `type` string, `getType()` has been removed in favour of a new pure virtual `getDeviceTypeDescription()`, `getAlias()` has been replaced by `getAliasOrName()` / `getAliasIfSet()`, and `OutputDevice::getName()` is no longer virtual.
+
+#### Possible Issues
+Custom device subclasses will no longer compile (constructor and `getDeviceTypeDescription()` requirements). Code overriding `OutputDevice::getName()` will silently stop being called.
+
+#### Workaround
+Update constructors to the new `(Engine&, name, deviceID)` signatures and implement `getDeviceTypeDescription()`. Replace `getAlias()` calls with `getAliasOrName()` (falls back to the name) or `getAliasIfSet()` (may be empty).
+
+#### Rationale
+The two device hierarchies duplicated a lot of state and behaviour; a common base simplifies the multichannel refactor.
+
+___
+
+### Change
+`WaveInputDevice::getChannels()` and `WaveOutputDevice::getChannels()` now return `const ChannelConfiguration&` instead of `const std::vector<ChannelIndex>&`. `isStereoPair()`, `setStereoPair()`, `WaveOutputDevice::getLeftChannel()` and `getRightChannel()` are deprecated.
+
+#### Possible Issues
+Code binding the old return type or using the deprecated methods will fail to compile or emit warnings.
+
+#### Workaround
+Use `getChannels().getNumChannels()`, `getChannels()[i].indexInDevice` and `setChannelConfiguration()` instead.
+
+#### Rationale
+Wave devices are no longer restricted to one or two channels.
+
+___
+
+### Change
+`RackInstance`'s two-channel API has been removed: the `enum Channel { left, right }`, the `Channel`-taking name/level setters and getters, and the `leftInputGoesTo` / `rightInputGoesTo` / `leftOutputComesFrom` / `rightOutputComesFrom` cached values and their associated parameters.
+
+#### Possible Issues
+Code using the left/right rack routing API will no longer compile.
+
+#### Workaround
+Use the new dynamic channel-mapping API: `get/setNumInputChannels`, `get/setNumOutputChannels`, `getNumChannelMappings()`, `get/setInputMapping`, `get/setOutputMapping`, `getInput/OutputGainParam (int)` etc. Existing saved edits are migrated automatically on load, so only code needs updating.
+
+#### Rationale
+Racks now support arbitrary channel counts rather than fixed stereo routing.
+
+___
+
+### Change
+`AudioClipBase`'s left/right channel API has been removed: `setLeftChannelActive`, `isLeftChannelActive`, `setRightChannelActive`, `isRightChannelActive` and the protected `activeChannels` member. `getActiveChannels()` remains but is deprecated.
+
+#### Possible Issues
+Code using these methods will no longer compile.
+
+#### Workaround
+Use `getSourceChannelConfiguration()`, `getActiveChannelConfiguration()`, `setActiveChannelConfiguration()` and `getOutputChannelConfiguration()`.
+
+#### Rationale
+Clips can now enable/disable any subset of an arbitrary number of source channels.
+
+___
+
+### Change
+`LevelMeasurer::Client::maxNumChannels` has been removed (channel storage is now dynamic), along with `setLevelCache()` and `getLevelCache()`.
+
+#### Possible Issues
+Code referencing the constant or the cache methods will no longer compile.
+
+#### Workaround
+Use the per-channel access APIs, which are unchanged; storage grows to fit however many channels are fed to the meter.
+
+#### Rationale
+Meters previously crashed when given more than the fixed number of channels; they now handle any channel count.
+
+___
+
+### Change
+`PluginWindowState::windowLocked` has been removed, along with its saved property.
+
+#### Possible Issues
+Code reading or writing `windowLocked` will no longer compile.
+
+#### Workaround
+None - window locking has been removed as a concept. Implement it at the application level if needed.
+
+#### Rationale
+The flag didn't belong in the engine and was barely used in practice.
+
+___
+
+### Change
+`RenderOptions::getStereo()` and the `stereo` cached value have been removed.
+
+#### Possible Issues
+Code querying or setting stereo/mono rendering through these will no longer compile.
+
+#### Workaround
+Use `getChannelConfiguration()` / `setChannelConfiguration()`.
+
+#### Rationale
+Renders can now target any channel layout, not just mono or stereo.
+
+___
+
+### Change
+`UIBehaviour::showOkCancelAlertBox()` and `showYesNoCancelAlertBox()` have been replaced by `showOkCancelAlertBoxAsync()` and `showYesNoCancelAlertBoxAsync()`, which take a completion callback instead of returning a result. `showMenuAndCreatePlugin()` is deprecated in favour of `showMenuAndCreatePluginAsync()`.
+
+#### Possible Issues
+Overrides of the old methods will no longer compile, and callers can no longer get a synchronous answer.
+
+#### Workaround
+Override the `Async` versions and restructure calling code into continuation callbacks. The result semantics are unchanged (`true` = OK; `1` = yes, `2` = no, `0` = cancel).
+
+#### Rationale
+The engine no longer runs modal loops, which block the message thread and can re-enter the engine in unexpected ways.
+
+___
+
+### Change
+Several save/load and project APIs have become asynchronous or lost their built-in UI as part of removing modal loops from the engine:
+- `EditFileOperations::save()` and `saveAs()` now return `void` and take a completion callback (as do `AppFunctions::saveEdit()` / `saveEditAs()`)
+- `Renderer::checkTargetFile()` now takes a completion callback instead of returning `bool`
+- `ProjectManager::createNewProjectInteractively()` now returns `void` and takes a callback
+- `ProjectManager::unpackArchiveAndAddToList()` now requires the caller to supply the destination directory (the engine no longer shows a file chooser)
+- `Project::askAboutTempoDetect()` has been removed
+
+#### Possible Issues
+Code using the old synchronous signatures will no longer compile.
+
+#### Workaround
+Pass completion callbacks and move any dependent logic into them. For tests, `test_utilities::saveEditSync()` provides a synchronous save. UI questions such as tempo detection are now the application's responsibility.
+
+#### Rationale
+Modal loops inside the engine blocked the message thread and made embedding the engine in other applications fragile.
+
+___
+
+### Change
+The free function `yieldGUIThread()` has been removed.
+
+#### Possible Issues
+Code calling it will no longer compile.
+
+#### Workaround
+None - delete the call. It was a Windows-only `juce::Thread::yield()` used from within modal loops, which no longer exist in the engine.
+
+#### Rationale
+Antiquated API that made no sense once the modal loops were removed.
+
+___
+
+### Change
+`FallbackReader` has been renamed to `AudioFormatReaderWithTimeout`, and `AudioFileCache::createFallbackReader()` to `createAudioFormatReaderWithTimeout()`. `AudioFileCache::Reader::readSamples()` now takes `ChannelConfiguration` arguments instead of `juce::AudioChannelSet`.
+
+#### Possible Issues
+Code using the old names or signature will no longer compile. No compatibility alias is provided.
+
+#### Workaround
+Rename the symbols and update `readSamples()` call sites to pass `ChannelConfiguration` (see `ChannelConfiguration::fromChannelSet()`).
+
+#### Rationale
+The old name didn't describe what the class did, and the cache is now channel-layout aware.
+
+___
+
+### Change
+`SourceFileReference::setToDirectFileReference()` and the file-taking `setToProjectFileReference()` overload have been replaced by a single `setToFile (const juce::File&, PathStyle, bool allowProjectItems)` method. `getSourceProjectItemID()` is now `getSourceProjectItemRef()`, returning a `ProjectItemRef`.
+
+#### Possible Issues
+Code using the removed setters or the old getter will no longer compile.
+
+#### Workaround
+Use `setToFile()` with `PathStyle::chooseBest`, `alwaysRelative` or `alwaysAbsolute`. Direct-file callers should pass `allowProjectItems = false`; project-item callers `chooseBest, true`.
+
+#### Rationale
+A single entry point with an explicit path policy replaces several overlapping setters, and supports the smarter relative/absolute path selection needed for folder-based projects.
+
+___
+
+### Change
+`Exportable::ReferencedItem::itemID` (a `ProjectItemID`) is now `itemRef` (a `ProjectItemRef`), and the pure virtual `reassignReferencedItem()` now takes a `ProjectItemRef` instead of a `ProjectItemID`. The `EngineBehaviour::reassignReferencedItem()` overloads changed the same way.
+
+#### Possible Issues
+Implementations of these virtuals in custom `Clip` or `Plugin` subclasses will no longer compile (or, if not marked `override`, will silently stop being called).
+
+#### Workaround
+Update the signatures to take `ProjectItemRef`. `ProjectItemRef` converts implicitly from `ProjectItemID`, and `getProjectItemID()` returns a `std::optional<ProjectItemID>` when the underlying ID is needed.
+
+#### Rationale
+Referenced items must support path-based references for folder-based projects.
+
+___
+
+### Change
+The engine's unit tests have been converted from `juce::UnitTest` to doctest.
+
+#### Possible Issues
+Clients that ran the engine's self-tests through a `juce::UnitTestRunner` (with `TRACKTION_UNIT_TESTS=1`) will find them gone.
+
+#### Workaround
+Run the tests with a doctest runner instead - see `examples/TestRunner`. The helpers in `tracktion_TestUtilities.h` retain their `juce::UnitTest`-taking overloads.
+
+#### Rationale
+doctest allows test filtering, better reporting and running the engine tests without a JUCE test harness.
+
+___
+
+### Change
+`TracktionArchiveFile` and `ExportJob` moved to `legacy::` namespace.
+
+#### Possible Issues
+Code using `TracktionArchiveFile` or `ExportJob` directly will no longer compile.
+
+#### Workaround
+Qualify with `legacy::` (e.g. `legacy::TracktionArchiveFile`). For new code, use `ArchiveJob` instead, which produces standard zip files. Use `isArchive()` and `isLegacyArchive()` to detect archive formats.
+
+#### Rationale
+The legacy `.trkarch` format is replaced by standard zip archives. The old classes are preserved in a `legacy::` namespace for reading existing archives.
+
+___
+
+### Change
+`ProjectSearchIndex`, `SearchOperation`, and related APIs have been removed.
+
+#### Possible Issues
+Code using `ProjectSearchIndex`, `SearchOperation`, `createSearchForKeywords()`, or `Project::searchFor()` will no longer compile. The header `tracktion_ProjectSearchIndex.h` has been deleted.
+
+#### Workaround
+Use plain string matching or Levenshtein distance on project item names/descriptions.
+
+#### Rationale
+The search infrastructure was tightly coupled to file-based project internals and not applicable to folder-based projects. Simpler alternatives are sufficient.
+
+___
+
+### Change
+`Edit::createEditForExamining(Engine&, ValueTree, EditRole, LoadContext*)` overload is now `[[deprecated]]`.
+
+#### Possible Issues
+Deprecation warnings when calling this overload.
+
+#### Workaround
+Use `loadEditForExamining(ProjectManager&, ProjectItemRef)` instead.
+
+#### Rationale
+The new function works with both file-based and folder-based projects and handles source resolution correctly.
+
+___
+
+### Change
+`Project::getAllItemIDs()` has been removed.
+
+#### Possible Issues
+Code that calls `getAllItemIDs()` will no longer compile.
+
+#### Workaround
+Use `getAllProjectItemRefs()` instead to iterate over project items.
+
+#### Rationale
+The method was unused and redundant with `getAllProjectItemRefs()`.
+
+___
+
+### Change
+`ProjectItemRef::getProjectItemID()` now returns `std::optional<ProjectItemID>` instead of a bare `ProjectItemID`.
+
+#### Possible Issues
+Code that chains method calls on the return value (e.g. `.isValid()`, `.getProjectID()`, `.getRawID()`) will no longer compile.
+
+#### Workaround
+Use `has_value()` or bool conversion instead of `.isValid()`. Use `->` to access members when the optional is known to contain a value (e.g. `pid->getProjectID()`). Use `*` to extract the value when passing to functions that expect `ProjectItemID`.
+
+#### Rationale
+Returning `std::optional` makes the fallibility explicit at the type level, preventing accidental use of an invalid `ProjectItemID`.
+
+___
+
+### Change
+`Project::getProjectID()` now returns `ProjectID` instead of `int`. `ProjectItemID` constructors and `createNewID` take `ProjectID` instead of `int`. `ProjectManager::getProject()` takes `ProjectID` instead of `int`.
+
+#### Possible Issues
+Code that stores or passes project IDs as raw `int` values will no longer compile.
+
+#### Workaround
+Wrap raw ints with `ProjectID(myInt)` and extract with `.toInt()`. For example: `ProjectID pid = project.getProjectID();` instead of `int pid = project.getProjectID();`.
+
+#### Rationale
+A strong type prevents accidental misuse of raw integers as project identifiers and makes the API self-documenting.
+
+___
+
+### Change
+`ProjectItemRef` replaces raw `ProjectItemID` in many APIs. `Project::getProjectItemRef()`, `getProjectItemFor()`, `removeProjectItem()`, and `getIndexOf()` now use `ProjectItemRef`. `ProjectItem::getProjectItemRef()` returns `const ProjectItemRef&`. `ProjectManager::getProjectItem()` and `findSourceFile()` have new `ProjectItemRef` overloads.
+
+#### Possible Issues
+Code that explicitly types return values as `ProjectItemID` from these methods will no longer compile.
+
+#### Workaround
+`ProjectItemRef` has an implicit constructor from `ProjectItemID`, so most call sites compile unchanged. For return values, use `auto` or `ProjectItemRef`. If you need the old type, call `.getProjectItemID()` on the ref after checking `isProjectItemID()`.
+
+#### Rationale
+`ProjectItemRef` supports both ID-based references (file-based projects) and path-based references (folder-based projects) in a single type.
+
+___
+
+### Change
+`ProjectManager::createNewProject`, `createNewProjectInteractively`, `createNewProjectFromTemplate`, and the `TempProject` constructor now accept a `ProjectType` parameter (`ProjectType::fileBased` or `ProjectType::folderBased`).
+
+#### Possible Issues
+None for existing code — the parameter defaults to `ProjectType::fileBased`.
+
+#### Workaround
+No changes required. Pass `ProjectType::folderBased` to create folder-based projects.
+
+#### Rationale
+Enables creation of folder-based projects through the existing project creation APIs.
+
+___
+
+### Change
+`Project::findOrphanItems()` has been deprecated in favour of `findOrphanItemRefs()`.
+
+#### Possible Issues
+Deprecation warnings when calling `findOrphanItems()`.
+
+#### Workaround
+Replace `findOrphanItems()` with `findOrphanItemRefs()`, which returns `juce::Array<ProjectItemRef>` instead of `juce::Array<ProjectItem::Ptr>`.
+
+#### Rationale
+The new method returns `ProjectItemRef` values that work with both file-based and folder-based project backends.
+
+___
+
+### Change
 `AudioClipBase::melodyneProxy` public member has been removed. Use the new `getARAProxy()` accessor instead.
 
 #### Possible Issues

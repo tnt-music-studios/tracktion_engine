@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 struct VolAutomatableParameter : public AutomatableParameter
 {
@@ -243,6 +242,9 @@ void VolumeAndPanPlugin::applyToBuffer (const PluginRenderContext& fc)
         {
             const auto numChansIn = buffer->getNumChannels();
 
+            if (numChansIn < 1)
+                return;
+
             setSmoothedValueTargets (fc.editTime.getStart(), numChansIn > 2);
 
             smoothedGainL.applyGain (buffer->getWritePointer (0, fc.bufferStartSample), fc.bufferNumSamples);
@@ -345,4 +347,4 @@ void VolumeAndPanPlugin::restorePluginStateFromValueTree (const juce::ValueTree&
         p->updateFromAttachedValue();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

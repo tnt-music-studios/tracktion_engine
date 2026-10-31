@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 ChorusPlugin::ChorusPlugin (PluginCreationInfo info)  : Plugin (info)
 {
@@ -89,7 +88,7 @@ void ChorusPlugin::applyToBuffer (const PluginRenderContext& fc)
             ph += speed;
 
             int intSweepPos = juce::roundToInt (sweep);
-            const float interp = sweep - intSweepPos;
+            const float interp = sweep - float (intSweepPos);
             intSweepPos = bufPos + lengthInSamples - intSweepPos;
 
             const float out = buf[(intSweepPos - 1) % lengthInSamples] * interp
@@ -125,4 +124,4 @@ void ChorusPlugin::restorePluginStateFromValueTree (const juce::ValueTree& v)
         p->updateFromAttachedValue();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

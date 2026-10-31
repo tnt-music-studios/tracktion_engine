@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     Contains the limits of the various elements that can be added to an Edit.
@@ -22,6 +21,15 @@ struct EditLimits
     int maxPluginsOnClip = 5;      /**< The maximum number of Plugin[s] a Clip can contain. */
     int maxPluginsOnTrack = 16;    /**< The maximum number of Plugin[s] a Track can contain. */
     int maxNumMasterPlugins = 4;   /**< The maximum number of master Plugin[s] and Edit can contain. */
+};
+
+/**
+    Defaults applied to newly created Edits.
+    @see EngineBehaviour::getEditDefaults
+*/
+struct EditDefaults
+{
+    TimecodeType timecodeType = TimecodeType::barsBeats;   /**< The timecode display format new Edits start with. */
 };
 
 /**
@@ -45,6 +53,14 @@ public:
 
     /// Gives an opportunity to load custom plugins for those that have been registered as custom formats but not added to the list.
     virtual std::unique_ptr<juce::PluginDescription> findDescriptionForFileOrID (const juce::String&)   { return {}; }
+
+    /// Like findDescriptionForFileOrID, but called with the Edit the plugin is being loaded
+    /// into, so the host can resolve references against that Edit's project first (e.g.
+    /// plugin resources copied along with a project folder). Defaults to findDescriptionForFileOrID.
+    virtual std::unique_ptr<juce::PluginDescription> findDescriptionForFileOrIDInEdit (Edit&, const juce::String& fileOrID)
+    {
+        return findDescriptionForFileOrID (fileOrID);
+    }
 
     /// Should return if the given plugin is disabled or not.
     /// ExternalPlugins will use this to determine if they should load themselves or not.
@@ -162,19 +178,42 @@ public:
     /// Should return the maximum number of elements that can be added to an Edit.
     virtual EditLimits getEditLimits()                                              { return {}; }
 
+    /// Returns the defaults applied to newly created Edits.
+    virtual EditDefaults getEditDefaults()                                          { return {}; }
+
     virtual juce::ReferenceCountedObjectPtr<RackType> createPresetRackType (int /*index*/, Edit&)     { return {}; }
 
     /// If you have any special plugins that access items in the Edit, you need to return them
     virtual juce::Array<Exportable::ReferencedItem> getReferencedItems (ExternalPlugin&) { return {}; }
 
-    /// If you have any special plugins that access items in the Edit, you need to reassign them
-    virtual void reassignReferencedItem (Clip&, const Exportable::ReferencedItem&, ProjectItemID, double)  {}
+    /// If you have any special clips that access items in the Edit, you need to reassign them
+    virtual void reassignReferencedItem (Clip&, const Exportable::ReferencedItem&, ProjectItemRef, double)  {}
 
     /// If you have any special clips that access items in the Edit, you need to return them
     virtual juce::Array<Exportable::ReferencedItem> getReferencedItems (Clip&)      { return {}; }
 
-    /// If you have any special clips that access items in the Edit, you need to reassign them
-    virtual void reassignReferencedItem (ExternalPlugin&, const Exportable::ReferencedItem&, ProjectItemID, double)  {}
+    /// If you have any special plugins that access items in the Edit, you need to reassign them
+    virtual void reassignReferencedItem (ExternalPlugin&, const Exportable::ReferencedItem&, ProjectItemRef, double)  {}
+
+    /// A loose file to bundle into an archive, and the relative path (using '/'
+    /// separators) it should take inside the archived project.
+    struct ExtraFileToArchive
+    {
+        juce::File file;
+        juce::String pathInArchive;
+    };
+
+    /// Return any extra loose files the Edit depends on that aren't tracked as
+    /// ProjectItems (e.g. plugin patch files), each with its path inside the
+    /// archived project. These are bundled when archiving a single Edit so they
+    /// survive the round-trip, wherever the files live.
+    virtual std::vector<ExtraFileToArchive> getExtraFilesToArchive (Edit&)          { return {}; }
+
+    /// Called when the user moves the transport while it's playing (e.g. jumping
+    /// to a marker) via
+    /// TransportControl::jumpTo(). Return a time to defer the jump until, e.g. to
+    /// quantise it to the launch quantisation, or nothing to jump straight away.
+    virtual std::optional<TimePosition> getTimeToJumpAt (TransportControl&, TimePosition /*newPosition*/)  { return {}; }
 
     /// If this returns false, ClipSlot Clips won't be included in the playback graph
     /// and arranger track clips will always be audible.
@@ -247,7 +286,17 @@ public:
     /// Returns the defaults to be applied to new clips.
     virtual ClipDefaults getClipDefaults()                                          { return {}; }
 
+    /// Allows a newly created clip to be customised.
+    /// This is called once, when a clip is created, after the engine's own
+    /// defaults have been applied and before a clip in a ClipSlot is prepared for
+    /// the launcher. It isn't called when an existing clip is moved, copied,
+    /// pasted or split.
+    virtual void newClipCreated (Clip&, [[ maybe_unused ]] bool fromRecording)      {}
+
     /// Allows a new clip to be customised.
+    [[deprecated ("Use newClipCreated instead. NB: this is no longer called when a "
+                  "clip is moved, copied, pasted or split, and is called after the "
+                  "engine's clip defaults have been applied")]]
     virtual void newClipAdded (Clip&, [[ maybe_unused ]] bool fromRecording)        {}
 
     struct ControlSurfaces
@@ -269,4 +318,4 @@ public:
     virtual ControlSurface* getCustomControlSurfaceForXML (ExternalControllerManager&, const juce::XmlElement&)     { return {}; }
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

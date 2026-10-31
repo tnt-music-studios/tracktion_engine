@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 //==============================================================================
@@ -46,7 +45,7 @@ private:
     bool readIntoBuffer (choc::buffer::FrameRange);
 };
 
-class BufferedFileReaderWrapper : public FallbackReader
+class BufferedFileReaderWrapper : public AudioFormatReaderWithTimeout
 {
 public:
     BufferedFileReaderWrapper (std::shared_ptr<BufferedAudioReader> s)
@@ -97,4 +96,4 @@ private:
     std::unique_ptr<juce::AudioFormatReader> createReader (juce::File);
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

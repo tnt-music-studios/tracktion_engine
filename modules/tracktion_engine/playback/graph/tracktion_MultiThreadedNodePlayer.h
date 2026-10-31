@@ -11,8 +11,7 @@
 #pragma once
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 //==============================================================================
@@ -80,9 +79,9 @@ public:
 
         if (splitTimelineRange.isSplit)
         {
-            const auto firstProportion = splitTimelineRange.timelineRange1.getLength() / (double) pc.referenceSampleRange.getLength();
+            const auto firstProportion = double (splitTimelineRange.timelineRange1.getLength()) / double (pc.referenceSampleRange.getLength());
 
-            const auto firstReferenceRange  = pc.referenceSampleRange.withEnd (pc.referenceSampleRange.getStart() + (int64_t) std::llround (pc.referenceSampleRange.getLength() * firstProportion));
+            const auto firstReferenceRange  = pc.referenceSampleRange.withEnd (pc.referenceSampleRange.getStart() + (int64_t) std::llround (double (pc.referenceSampleRange.getLength()) * firstProportion));
             const auto secondReferenceRange = juce::Range<int64_t> (firstReferenceRange.getEnd(), pc.referenceSampleRange.getEnd());
             jassert (firstReferenceRange.getLength() + secondReferenceRange.getLength() == pc.referenceSampleRange.getLength());
 
@@ -141,4 +140,4 @@ private:
     tracktion::graph::MultiThreadedNodePlayer nodePlayer;
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

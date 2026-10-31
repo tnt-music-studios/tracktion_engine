@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** */
 class MidiInputDevice : public InputDevice,
@@ -18,7 +17,7 @@ class MidiInputDevice : public InputDevice,
                         private juce::MidiKeyboardStateListener
 {
 public:
-    MidiInputDevice (Engine&, juce::String type, juce::String name, juce::String deviceID);
+    MidiInputDevice (Engine&, juce::String name, juce::String deviceID);
     ~MidiInputDevice() override;
 
     virtual juce::String openDevice() = 0;
@@ -170,4 +169,4 @@ protected:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiInputDevice)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

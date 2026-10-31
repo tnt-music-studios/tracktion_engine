@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 FreezePointPlugin::ScopedTrackUnsoloer::ScopedTrackUnsoloer (Edit& e)  : edit (e)
 {
@@ -192,7 +191,8 @@ void FreezePointPlugin::updateTrackFreezeStatus()
                  && isTrackFrozen()
                  && ! at->pluginList.getEdit().isLoading())
             {
-                freezeTrack (false);
+                [[maybe_unused]] const auto unfrozen = freezeTrack (false);
+                jassert (unfrozen.wasOk());
                 at->freezeTrackAsync();
             }
 
@@ -209,15 +209,18 @@ bool FreezePointPlugin::isTrackFrozen() const
     return false;
 }
 
-void FreezePointPlugin::freezeTrack (bool shouldBeFrozen)
+juce::Result FreezePointPlugin::freezeTrack (bool shouldBeFrozen)
 {
+    auto result = juce::Result::ok();
+
     if (auto at = dynamic_cast<AudioTrack*> (getOwnerTrack()))
     {
         const AudioTrack::FreezePointRemovalInhibitor inhibitor (*at);
-        at->setFrozen (shouldBeFrozen, Track::individualFreeze);
+        result = at->setFrozen (shouldBeFrozen, Track::individualFreeze);
     }
 
     changed();
+    return result;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -28,6 +27,15 @@ public:
                      int bitsPerSample,
                      const juce::StringPairArray& metadata,
                      int quality);
+
+    AudioFileWriter (const AudioFile& file,
+                     juce::AudioFormat* formatToUse,
+                     int numChannels,
+                     double sampleRate,
+                     int bitsPerSample,
+                     const juce::StringPairArray& metadata,
+                     int quality,
+                     const juce::AudioChannelSet& channelLayout);
 
     /** Destructor, calls closeForWriting. */
     ~AudioFileWriter();
@@ -63,4 +71,4 @@ private:
     juce::CriticalSection writerLock;
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

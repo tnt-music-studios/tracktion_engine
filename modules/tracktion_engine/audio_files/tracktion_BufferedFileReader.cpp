@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 BufferedFileReader::BufferedFileReader (juce::AudioFormatReader* sourceReader,
                                         juce::TimeSliceThread& timeSliceThread,
@@ -180,7 +179,7 @@ BufferedFileReader::ScopedSlotAccess::~ScopedSlotAccess()
 
 BufferedFileReader::ScopedSlotAccess BufferedFileReader::ScopedSlotAccess::fromPosition (BufferedFileReader& reader, juce::int64 position)
 {
-    return { reader, static_cast<size_t> (position / (float) samplesPerBlock) };
+    return { reader, static_cast<size_t> (position / static_cast<juce::int64> (samplesPerBlock)) };
 }
 
 void BufferedFileReader::ScopedSlotAccess::setBlock (BufferedBlock* blockToReferTo)
@@ -343,7 +342,7 @@ BufferedFileReader::PositionStatus BufferedFileReader::readNextBufferChunk()
 
 size_t BufferedFileReader::getSlotIndexFromSamplePosition (juce::int64 samplePos)
 {
-    return static_cast<size_t> (samplePos / (float) samplesPerBlock);
+    return static_cast<size_t> (samplePos / static_cast<juce::int64> (samplesPerBlock));
 }
 
 juce::Range<juce::int64> BufferedFileReader::getSlotRange (size_t slotIndex)
@@ -369,4 +368,4 @@ void BufferedFileReader::markSlotUseState (size_t slotIndex, bool isInUse)
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

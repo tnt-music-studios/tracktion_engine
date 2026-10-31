@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** A test plugin that introduces latency to the incoming signal.
     This isn't added to the PluginManager by default as its main use is for
@@ -29,6 +28,8 @@ public:
     juce::String getName() const override                   { return getPluginName(); }
     juce::String getPluginType() override                   { return xmlTypeName; }
     juce::String getSelectableDescription() override        { return getName(); }
+
+    BusLayout getBusses() const override   { return BusLayout::singleStereoInOut(); }
 
     void initialise (const PluginInitialisationInfo&) override;
     void deinitialise() override;
@@ -52,4 +53,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LatencyPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -7,8 +7,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 AirWindowsCallback::AirWindowsCallback (AirWindowsPlugin& o)
@@ -77,6 +76,12 @@ void AirWindowsPlugin::resetToDefault()
 int AirWindowsPlugin::getNumOutputChannelsGivenInputs (int)
 {
     return impl->getNumOutputs();
+}
+
+Plugin::BusLayout AirWindowsPlugin::getBusses() const
+{
+    return BusLayout::singleInOut (ChannelConfiguration::canonical (impl->getNumInputs()),
+                                   ChannelConfiguration::canonical (impl->getNumOutputs()));
 }
 
 juce::String AirWindowsPlugin::getSelectableDescription()
@@ -223,4 +228,4 @@ void AirWindowsPlugin::flushPluginStateToValueTree()
 }
 
 
-} }
+}

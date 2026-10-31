@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace IDs
 {
@@ -830,7 +829,8 @@ void TransportControl::releaseAudioNodes()
 
 void TransportControl::ensureContextAllocated (bool alwaysReallocate)
 {
-    if (! edit.shouldPlay())
+    // Whilst rendering, the playback context must stay freed (see Edit::ScopedRenderStatus)
+    if (! edit.shouldPlay() || edit.isRendering())
         return;
 
     const auto start = position.get();
@@ -850,6 +850,10 @@ void TransportControl::ensureContextAllocated (bool alwaysReallocate)
 
 void TransportControl::freePlaybackContext()
 {
+    if (playbackContext)
+        if (auto syncPoint = playbackContext->getSyncPoint())
+            lastContextMonotonicBeat = syncPoint->monotonicBeat;
+
     playbackContext.reset();
     clearPlayingFlags();
     transportState->playbackContextAllocation = std::max (0, transportState->playbackContextAllocation - 1);
@@ -1091,8 +1095,16 @@ void TransportControl::timerCallback()
         if (! looping || isPlaying())
         {
             const auto currentTime = playHeadWrapper->getLiveTransportPosition();
-            transportState->setVideoPosition (currentTime, false);
-            transportState->updatePositionFromPlayhead (currentTime);
+            const auto sampleRate = playHeadWrapper->getSampleRate();
+
+            // The playhead quantises positions to whole samples, so if it's still at the
+            // transport position, keep the precisely-set position rather than replacing
+            // it with the quantised readback (which would show e.g. 8|4|959 instead of 9|1|000)
+            if (toSamples (currentTime, sampleRate) != toSamples (position.get(), sampleRate))
+            {
+                transportState->setVideoPosition (currentTime, false);
+                transportState->updatePositionFromPlayhead (currentTime);
+            }
         }
     }
 
@@ -1161,6 +1173,20 @@ void TransportControl::setPosition (TimePosition timeToMoveTo, TimePosition time
         epc->postPosition (timeToMoveTo, timeToPerformJump);
 
     sendChangeMessage();
+}
+
+void TransportControl::jumpTo (TimePosition t)
+{
+    if (isPlaying())
+    {
+        if (auto timeToJumpAt = engine.getEngineBehaviour().getTimeToJumpAt (*this, t))
+        {
+            setPosition (t, *timeToJumpAt);
+            return;
+        }
+    }
+
+    setPosition (t);
 }
 
 void TransportControl::setUserDragging (bool b)
@@ -1717,7 +1743,6 @@ void TransportControl::performPositionChange()
 
     position = newPos;
 
-    yieldGUIThread();
 
     if (! transportState->userDragging)
         transportState->lastUserDragTime = juce::Time::getMillisecondCounter();
@@ -1733,7 +1758,11 @@ void TransportControl::performPositionChange()
     const int minutes = (((int) mmcTime) / 60) % 60;
     const int seconds = (((int) mmcTime) % 60);
 
+   #if JUCE_VERSION >= 0x8000e
+    sendMMC (juce::MidiMessage::midiMachineControlGoto ({ 0, (uint8_t) hours, (uint8_t) minutes, (uint8_t) seconds, (uint8_t) frames, 0 }));
+   #else
     sendMMC (juce::MidiMessage::midiMachineControlGoto (hours, minutes, seconds, frames));
+   #endif
 }
 
 void TransportControl::performRewindButtonChanged()
@@ -1827,4 +1856,4 @@ void freePlaybackContextIfNotRecording (TransportControl& tc)
         tc.freePlaybackContext();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

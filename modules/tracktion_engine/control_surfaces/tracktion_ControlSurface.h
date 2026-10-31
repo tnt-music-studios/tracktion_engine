@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 struct ParameterSetting
 {
@@ -138,14 +137,23 @@ public:
     // state 2: pulse
     virtual void padStateChanged ([[maybe_unused]] int channelNumber, [[maybe_unused]] int sceneNumber, [[maybe_unused]] int colourIdx, [[maybe_unused]] int state) {}
 
+    // As padStateChanged, but also passes the colour the UI draws the pad's clip in
+    // (see UIBehaviour::getClipColourForControlSurface), or transparent if the pad has
+    // no clip colour, e.g. because it's empty, playing or recording.
+    // By default this calls padStateChanged.
+    virtual void padColourStateChanged (int channelNumber, int sceneNumber, int colourIdx,
+                                        [[maybe_unused]] juce::Colour colour, int state)
+    {
+        padStateChanged (channelNumber, sceneNumber, colourIdx, state);
+    }
+
     // Are any clips on the track playing.
     virtual void clipsPlayingStateChanged ([[maybe_unused]] int channel, [[maybe_unused]] bool isPlaying) {}
 
     // if the device has per-channel level meters, this should update one of them.
     // the channel number is the physical channel on the device, regardless of bank selection
-    // if the channel is mono then l == r
-    // level is 0 to 1.0
-    virtual void channelLevelChanged ([[maybe_unused]] int channel, [[maybe_unused]] float l, [[maybe_unused]] float r) {}
+    // levels are 0 to 1.0, one per channel
+    virtual void channelLevelChanged ([[maybe_unused]] int channel, [[maybe_unused]] std::span<const float> levels) {}
 
     // when a track is selected or deselected
     virtual void trackSelectionChanged ([[maybe_unused]] int channel, [[maybe_unused]] bool isSelected) {}
@@ -153,8 +161,8 @@ public:
     virtual void trackRecordEnabled ([[maybe_unused]] int channel, [[maybe_unused]] bool isEnabled) {}
 
     // if the device has a master level readout, this should update it.
-    virtual void masterLevelsChanged ([[maybe_unused]] float leftLevel,
-                                      [[maybe_unused]] float rightLevel) {}
+    // levels are 0 to 1.0, one per channel
+    virtual void masterLevelsChanged ([[maybe_unused]] std::span<const float> levels) {}
 
     // tells the device that the playback position has changed, so if it has a timecode
     // display, it should update it.
@@ -495,4 +503,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ControlSurface)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

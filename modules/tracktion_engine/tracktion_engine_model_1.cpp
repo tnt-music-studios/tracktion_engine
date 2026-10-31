@@ -14,7 +14,6 @@
 #include <chrono>
 
 #include "3rd_party/magic_enum/tracktion_magic_enum.hpp"
-#include "3rd_party/nanorange/tracktion_nanorange.hpp"
 
 using namespace std::literals;
 
@@ -40,8 +39,10 @@ using namespace std::literals;
 #include "model/edit/tracktion_Edit.cpp"
 #include "model/edit/tracktion_Edit.test.cpp"
 #include "model/edit/tracktion_EditUtilities.cpp"
+#include "model/edit/tracktion_EditUtilities.test.cpp"
 #include "model/edit/tracktion_Scene.cpp"
 #include "model/edit/tracktion_SourceFileReference.cpp"
+#include "model/edit/tracktion_SourceFileReference.test.cpp"
 #include "model/clips/tracktion_Clip.cpp"
 
 #include "model/automation/tracktion_AutomatableEditItem.cpp"
@@ -67,7 +68,9 @@ using namespace std::literals;
 
 #include "model/clips/tracktion_ArrangerClip.cpp"
 #include "model/clips/tracktion_AudioClipBase.cpp"
+#include "model/clips/tracktion_AudioClipBase.test.cpp"
 #include "model/clips/tracktion_CompManager.cpp"
+#include "model/clips/tracktion_CompManager.test.cpp"
 #include "model/clips/tracktion_WaveAudioClip.cpp"
 #include "model/clips/tracktion_ChordClip.cpp"
 #include "model/clips/tracktion_EditClip.cpp"
@@ -88,7 +91,9 @@ using namespace std::literals;
 #include "model/clips/tracktion_StepClipPattern.cpp"
 #include "model/clips/tracktion_StepClip.cpp"
 #include "model/clips/tracktion_ClipEffects.cpp"
+#include "model/clips/tracktion_ClipEffects.test.cpp"
 #include "model/clips/tracktion_ClipOwner.cpp"
+#include "model/clips/tracktion_ClipDefaults.test.cpp"
 #include "model/clips/tracktion_WarpTimeManager.cpp"
 
 #ifdef __GNUC__

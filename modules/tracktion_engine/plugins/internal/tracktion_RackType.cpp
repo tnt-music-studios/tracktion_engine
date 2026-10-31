@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 static constexpr int maxRackAudioChans = 64;
 
@@ -203,9 +202,6 @@ RackType::RackType (Edit& ed, const juce::ValueTree& v)
         auto ws = createValueTree (IDs::WINDOWSTATE,
                                    IDs::windowPos, state[IDs::windowPos]);
 
-        if (state.hasProperty (IDs::windowLocked))
-            ws.setProperty (IDs::windowLocked, state[IDs::windowLocked], nullptr);
-
         state.addChild (ws, -1, nullptr);
     }
 
@@ -364,10 +360,12 @@ void RackType::loadWindowPosition()
     for (auto* ws : getWindowStates())
     {
         if (ws->state.hasProperty (IDs::windowPos))
-            ws->lastWindowBounds = juce::Rectangle<int>::fromString (ws->state[IDs::windowPos].toString());
+        {
+            auto s = ws->state[IDs::windowPos].toString();
 
-        if (ws->state.hasProperty (IDs::windowLocked))
-            ws->windowLocked = ws->state[IDs::windowLocked];
+            if (s.isNotEmpty())
+                ws->lastWindowBounds = juce::Rectangle<int>::fromString (s);
+        }
     }
 }
 
@@ -379,7 +377,6 @@ void RackType::saveWindowPosition()
         {
             auto windowState = ws->lastWindowBounds->toString();
             ws->state.setProperty (IDs::windowPos, windowState.isEmpty() ? juce::var() : juce::var (windowState), nullptr);
-            ws->state.setProperty (IDs::windowLocked, ws->windowLocked, nullptr);
         }
     }
 }
@@ -402,7 +399,7 @@ RackType::Ptr RackType::createTypeToWrapPlugins (const Plugin::Array& plugins, E
 
     for (int i = 0; i < plugins.size(); ++i)
         if (auto f = plugins[i])
-            rack->addPlugin (f, juce::Point<float> (1.0f / (plugins.size() + 1) * (i + 1), 0.5f), false);
+            rack->addPlugin (f, juce::Point<float> (1.0f / float (plugins.size() + 1) * float (i + 1), 0.5f), false);
 
     juce::StringArray ins, outs;
     plugins.getFirst()->getChannelNames (&ins, nullptr);
@@ -712,9 +709,9 @@ void RackType::checkConnections()
             // Check for connections going to no longer available plugin IO pins
             if (auto ep = dynamic_cast<ExternalPlugin*> (getPluginForID (rc->sourceID)))
             {
-                if (ep->getAudioPluginInstance() != nullptr)
+                if (auto pi = ep->getAudioPluginInstance())
                 {
-                    if (rc->sourcePin < 0 || rc->sourcePin > ep->getNumOutputs())
+                    if (rc->sourcePin < 0 || rc->sourcePin > pi->getTotalNumOutputChannels())
                     {
                         state.removeChild (rc->state, getUndoManager());
                         continue;
@@ -724,9 +721,9 @@ void RackType::checkConnections()
 
             if (auto ep = dynamic_cast<ExternalPlugin*> (getPluginForID (rc->destID)))
             {
-                if (ep->getAudioPluginInstance() != nullptr)
+                if (auto pi = ep->getAudioPluginInstance())
                 {
-                    if (rc->destPin < 0 || rc->destPin > ep->getNumInputs())
+                    if (rc->destPin < 0 || rc->destPin > pi->getTotalNumInputChannels())
                     {
                         state.removeChild (rc->state, getUndoManager());
                         continue;
@@ -865,13 +862,13 @@ void RackType::createInstanceForSideChain (Track& at, const juce::BigInteger& ch
             if (srcPinIndex == -1)
                 srcPinIndex = addInput (-1, leftName);
 
-            rack->setInputName (RackInstance::left, leftName);
-            rack->setOutputName (RackInstance::left, noneName);
+            rack->setInputMappingByName (0, leftName);
+            rack->setOutputMappingByName (0, noneName);
 
             if (! connectRight)
             {
-                rack->setInputName (RackInstance::right, noneName);
-                rack->setOutputName (RackInstance::right, noneName);
+                rack->setInputMappingByName (1, noneName);
+                rack->setOutputMappingByName (1, noneName);
             }
 
             if (srcPinIndex >= 0)
@@ -885,13 +882,13 @@ void RackType::createInstanceForSideChain (Track& at, const juce::BigInteger& ch
             if (srcPinIndex == -1)
                 srcPinIndex = addInput (-1, rightName);
 
-            rack->setInputName (RackInstance::right, rightName);
-            rack->setOutputName (RackInstance::right, noneName);
+            rack->setInputMappingByName (1, rightName);
+            rack->setOutputMappingByName (1, noneName);
 
             if (! connectLeft)
             {
-                rack->setInputName (RackInstance::left, noneName);
-                rack->setOutputName (RackInstance::left, noneName);
+                rack->setInputMappingByName (0, noneName);
+                rack->setOutputMappingByName (0, noneName);
             }
 
             if (srcPinIndex != -1)
@@ -1442,7 +1439,7 @@ void RackType::valueTreeParentChanged (juce::ValueTree&)
 void RackType::valueTreePropertyChanged (juce::ValueTree& v, const juce::Identifier& ident)
 {
     if (v.hasType (IDs::PLUGININSTANCE) || v.hasType (IDs::CONNECTION))
-        if (ident != IDs::x && ident != IDs::y && ident != IDs::windowLocked && ident != IDs::windowPos)
+        if (ident != IDs::x && ident != IDs::y && ident != IDs::windowPos)
             triggerUpdate();
 
     if (v == state && ident == IDs::name)
@@ -1466,4 +1463,4 @@ RackType::WindowState::WindowState (RackType& r, juce::ValueTree windowStateTree
     : PluginWindowState (r.edit), rack (r), state (std::move (windowStateTree))
 {}
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

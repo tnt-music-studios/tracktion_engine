@@ -10,8 +10,7 @@
 
 #include "tracktion_WaveNode.h"
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 //==============================================================================
@@ -190,8 +189,8 @@ void DynamicOffsetNode::process (ProcessContext& pc)
                 return;
 
             const auto numRefSamples = pc.referenceSampleRange.getLength();
-            const auto startRefSample  = pc.referenceSampleRange.getStart() + (int64_t) std::llround (proportion.getStart() * numRefSamples);
-            const auto endRefSample    = pc.referenceSampleRange.getStart() + (int64_t) std::llround (proportion.getEnd() * numRefSamples);
+            const auto startRefSample  = pc.referenceSampleRange.getStart() + (int64_t) std::llround (proportion.getStart() * static_cast<double> (numRefSamples));
+            const auto endRefSample    = pc.referenceSampleRange.getStart() + (int64_t) std::llround (proportion.getEnd() * static_cast<double> (numRefSamples));
 
             const juce::Range subSectionReferenceSampleRange (startRefSample, endRefSample);
 
@@ -291,4 +290,4 @@ void DynamicOffsetNode::processSection (ProcessContext& pc, BeatRange sectionRan
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

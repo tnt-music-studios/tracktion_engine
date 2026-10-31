@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class SamplerPlugin  : public Plugin,
                        private juce::AsyncUpdater
@@ -46,6 +45,9 @@ public:
     void playNotes (const juce::BigInteger& keysDown);
     void allNotesOff();
 
+    /// If the state has changed and an update is pending, do it synchronously now
+    void flushPendingUpdates();
+
     //==============================================================================
     static const char* getPluginName()                  { return NEEDS_TRANS("Sampler"); }
     static const char* xmlTypeName;
@@ -56,7 +58,8 @@ public:
     juce::String getSelectableDescription() override    { return TRANS("Sampler"); }
     bool isSynth() override                             { return true; }
 
-    int getNumOutputChannelsGivenInputs (int numInputChannels) override { return juce::jmin (numInputChannels, 2); }
+    int getNumOutputChannelsGivenInputs (int) override                 { return 2; }
+    BusLayout getBusses() const override   { return BusLayout::singleStereoInOut(); }
     void initialise (const PluginInitialisationInfo&) override;
     void deinitialise() override;
     void applyToBuffer (const PluginRenderContext&) override;
@@ -68,7 +71,7 @@ public:
     bool hasNameForMidiNoteNumber (int note, int midiChannel, juce::String& name) override;
 
     juce::Array<ReferencedItem> getReferencedItems() override;
-    void reassignReferencedItem (const ReferencedItem&, ProjectItemID newID, double newStartTime) override;
+    void reassignReferencedItem (const ReferencedItem&, ProjectItemRef newRef, double newStartTime) override;
     void sourceMediaChanged() override;
 
     void restorePluginStateFromValueTree (const juce::ValueTree&) override;
@@ -115,4 +118,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SamplerPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

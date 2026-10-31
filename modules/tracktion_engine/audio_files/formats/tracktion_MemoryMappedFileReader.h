@@ -8,15 +8,14 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
-    FallbackReader that wraps a MemoryMappedFile which usually improves read speeds.
+    AudioFormatReaderWithTimeout that wraps a MemoryMappedFile which usually improves read speeds.
 */
 //==============================================================================
-struct MemoryMappedFileReader    : public FallbackReader
+struct MemoryMappedFileReader    : public AudioFormatReaderWithTimeout
 {
     /** Creates a MemoryMappedFileReader for a  MappedFileAndReader. */
     MemoryMappedFileReader (std::unique_ptr<AudioFileUtils::MappedFileAndReader> mappedFileAndReader)
@@ -51,9 +50,9 @@ private:
 //==============================================================================
 //==============================================================================
 /**
-    FallbackReader that wraps a BufferingAudioReader to avoid reading on the audio thread.
+    AudioFormatReaderWithTimeout that wraps a BufferingAudioReader to avoid reading on the audio thread.
 */
-class BufferingAudioReaderWrapper   : public FallbackReader
+class BufferingAudioReaderWrapper   : public AudioFormatReaderWithTimeout
 {
 public:
     BufferingAudioReaderWrapper (std::unique_ptr<juce::BufferingAudioReader> sourceReader)
@@ -86,4 +85,4 @@ private:
 };
 
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -10,8 +10,7 @@
 
 #pragma once
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 /**
@@ -78,12 +77,18 @@ private:
     Renderer::Parameters r, originalParams;
     bool needsToNormaliseAndTrim = false;
 
+    // Set when renderNextBlock notices a cancellation. The destructor can't use
+    // owner.shouldCancel() for this as a cancelled context may be destroyed later
+    // on the message thread, where the cancelling thread's state isn't visible
+    bool wasCancelled = false;
+
     std::unique_ptr<tracktion::graph::PlayHead> playHead;
     std::unique_ptr<tracktion::graph::PlayHeadState> playHeadState;
     std::unique_ptr<ProcessState> processState;
     std::unique_ptr<TracktionNodePlayer> nodePlayer;
 
     int numOutputChans = 0;
+    ChannelMap outputChannelMap;
     std::unique_ptr<AudioFileWriter> writer;
     Plugin::Array plugins;
     juce::Result status;
@@ -112,6 +117,7 @@ private:
     int64_t samplesTrimmed = 0;
     bool hasStartedSavingToFile = 0;
     int64_t samplesToWrite = 0, numSamplesWrittenToSource = 0;
+    int64_t samplesPastRangeStart = 0, rangeLengthInSamples = 0;
 
     std::unique_ptr<juce::TemporaryFile> intermediateFile;
     juce::AudioFormatWriter::ThreadedWriter::IncomingDataReceiver* sourceToUpdate;
@@ -126,4 +132,4 @@ private:
     WriteResult writeAudioBlock (choc::buffer::ChannelArrayView<float>);
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

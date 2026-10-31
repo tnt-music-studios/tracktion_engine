@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 juce::File getNonExistentSiblingWithIncrementedNumberSuffix (const juce::File& file, bool addHashSymbol)
 {
@@ -58,9 +57,29 @@ juce::File getNonExistentSiblingWithIncrementedNumberSuffix (const juce::File& f
 //==============================================================================
 bool isMidiFile (const juce::File& f)             { return f.hasFileExtension ("mid;rmi;rmid;midi"); }
 bool isTracktionEditFile (const juce::File& f)    { return f.hasFileExtension (editFileSuffix) || f.hasFileExtension (legacyEditFileSuffix); }
-bool isTracktionArchiveFile (const juce::File& f) { return f.hasFileExtension (archiveFileSuffix); }
+bool isTracktionArchiveFile (const juce::File& f) { return f.hasFileExtension (archiveFileSuffix_v2) || f.hasFileExtension (legacyArchiveFileSuffix); }
 bool isTracktionProjectFile (const juce::File& f) { return f.hasFileExtension (projectFileSuffix); }
 bool isTracktionPresetFile (const juce::File& f)  { return f.hasFileExtension (presetFileSuffix); }
+
+bool isTracktionProjectFolder (const juce::File& f)
+{
+    if (! f.isDirectory())
+        return false;
+
+    if (f.getChildFile ("project_info.json").existsAsFile())
+        return true;
+
+    for (auto& child : f.findChildFiles (juce::File::findFiles, false))
+        if (isTracktionEditFile (child))
+            return true;
+
+    return false;
+}
+
+bool isTracktionProjectFileOrFolder (const juce::File& f)
+{
+    return isTracktionProjectFile (f) || isTracktionProjectFolder (f);
+}
 
 //==============================================================================
 FileDragList::Ptr FileDragList::getFromDrag (const juce::DragAndDropTarget::SourceDetails& s)
@@ -83,4 +102,4 @@ juce::var FileDragList::create (const juce::File& file, PreferredLayout peferred
     return create (files, peferredLayout);
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

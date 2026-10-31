@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class ExternalAutomatableParameter   : public AutomatableParameter,
                                        private juce::AudioProcessorParameter::Listener,
@@ -178,7 +177,7 @@ public:
             if (const VSTXML::Entry* e = valueType->entries[state])
                 return (e->range.high + e->range.low) / 2.0f;
 
-        return juce::jlimit (0.0f, 1.0f, 1.0f / float (getNumberOfStates() - 1) * state);
+        return juce::jlimit (0.0f, 1.0f, 1.0f / float (getNumberOfStates() - 1) * float (state));
     }
 
     juce::String getLabelForValue (float val) const override
@@ -229,7 +228,7 @@ public:
             }
 
             int state = juce::jlimit (0, getNumberOfStates() - 1,
-                                      (int) (val * getNumberOfStates()));
+                                      (int) (val * float (getNumberOfStates())));
             return getValueForState (state);
         }
 
@@ -254,7 +253,7 @@ public:
                         return i;
             }
 
-            return juce::roundToInt (std::floor (val * getNumberOfStates()));
+            return juce::roundToInt (std::floor (val * float (getNumberOfStates())));
         }
 
         return 0;
@@ -334,4 +333,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ExternalAutomatableParameter)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -12,8 +12,7 @@
 
 #include "tracktion_SpeedRampWaveNode.h"
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class TimeRangeRemappingReader;
 class EditToClipBeatReader;
@@ -50,11 +49,12 @@ public:
               TimeRange loopSection,
               LiveClipLevel,
               double speedRatio,
-              const juce::AudioChannelSet& sourceChannelsToUse,
-              const juce::AudioChannelSet& destChannelsToFill,
+              const ChannelConfiguration& sourceChannelsToUse,
+              const ChannelConfiguration& destChannelsToFill,
               ProcessState&,
               EditItemID,
-              bool isOfflineRender);
+              bool isOfflineRender,
+              std::shared_ptr<AudioClipPlayhead> = {});
 
     //==============================================================================
     tracktion::graph::NodeProperties getNodeProperties() override;
@@ -72,9 +72,10 @@ private:
 
     AudioFile audioFile;
     LiveClipLevel clipLevel;
+    std::shared_ptr<AudioClipPlayhead> playhead;
     juce::Range<int64_t> editPositionInSamples;
     double audioFileSampleRate = 0;
-    const juce::AudioChannelSet sourceChannels, destChannels;
+    const ChannelConfiguration sourceChannels, destChannels;
     AudioFileCache::Reader::Ptr reader;
 
     struct PerChannelState;
@@ -114,8 +115,8 @@ public:
                       TimeRange loopSection,
                       LiveClipLevel,
                       double speedRatio,
-                      const juce::AudioChannelSet& sourceChannelsToUse,
-                      const juce::AudioChannelSet& destChannelsToFill,
+                      const ChannelConfiguration& sourceChannelsToUse,
+                      const ChannelConfiguration& destChannelsToFill,
                       ProcessState&,
                       EditItemID,
                       bool isOfflineRender,
@@ -125,7 +126,8 @@ public:
                       TimeStretcher::Mode = TimeStretcher::Mode::disabled,
                       TimeStretcher::ElastiqueProOptions = {},
                       float pitchChangeSemitones = 0.0f,
-                      ReadAhead = ReadAhead::no);
+                      ReadAhead = ReadAhead::no,
+                      std::shared_ptr<AudioClipPlayhead> = {});
 
     //==============================================================================
     /** Represets whether the file should try and match Edit tempo changes. */
@@ -145,8 +147,8 @@ public:
         BeatDuration offset;
         BeatRange loopSection;
         LiveClipLevel liveClipLevel;
-        juce::AudioChannelSet sourceChannelsToUse;
-        juce::AudioChannelSet destChannelsToFill;
+        ChannelConfiguration sourceChannelsToUse;
+        ChannelConfiguration destChannelsToFill;
         EditItemID itemID;
         bool isOfflineRender = false;
         ResamplingQuality resamplingQuality = ResamplingQuality::lagrange;
@@ -159,6 +161,7 @@ public:
         std::optional<tempo::Sequence> chordPitchSequence;
         float pitchChangeSemitones = 1.0f;
         ReadAhead readAhead = ReadAhead::no;
+        std::shared_ptr<AudioClipPlayhead> playhead;
     };
 
     /** Constructs a beat-based WaveNodeRealTime. */
@@ -183,8 +186,8 @@ public:
                       BeatDuration offset,
                       BeatRange loopSection,
                       LiveClipLevel,
-                      const juce::AudioChannelSet& sourceChannelsToUse,
-                      const juce::AudioChannelSet& destChannelsToFill,
+                      const ChannelConfiguration& sourceChannelsToUse,
+                      const ChannelConfiguration& destChannelsToFill,
                       ProcessState&,
                       EditItemID,
                       bool isOfflineRender,
@@ -196,7 +199,8 @@ public:
                       SyncTempo, SyncPitch,
                       std::optional<tempo::Sequence> chordPitchSequence,
                       float pitchChangeSemitones = 1.0f,
-                      ReadAhead = ReadAhead::no);
+                      ReadAhead = ReadAhead::no,
+                      std::shared_ptr<AudioClipPlayhead> = {});
 
     //==============================================================================
     /** Sets an offset to be applied to all times in this node, effectively shifting
@@ -228,7 +232,8 @@ private:
     TimeStretcher::Mode timeStretcherMode;
     TimeStretcher::ElastiqueProOptions elastiqueProOptions;
     LiveClipLevel clipLevel;
-    const juce::AudioChannelSet channelsToUse, destChannels;
+    std::shared_ptr<AudioClipPlayhead> playhead;
+    const ChannelConfiguration channelsToUse, destChannels;
     float pitchChangeSemitones = 0.0;
     double outputSampleRate = 44100.0;
     int outputBlockSize = 0;
@@ -258,7 +263,7 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveNodeRealTime)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 #ifndef DOXYGEN
 template<>

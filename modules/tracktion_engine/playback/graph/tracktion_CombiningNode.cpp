@@ -12,8 +12,7 @@
 
 #define USE_PARTITION_INSERTION 1
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 namespace combining_node_utils
 {
@@ -87,7 +86,9 @@ struct CombiningNode::TimedNode
 
     void process (ProcessContext& pc)
     {
+       #if JUCE_DEBUG
         jassert (hasPrefetched);
+       #endif
 
         // Process all the Nodes
         for (auto n : nodesToProcess)
@@ -384,4 +385,4 @@ void CombiningNode::queueNoteOffsForClipsNoLongerPresent (const CombiningNode& o
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 using SampleCount = int64_t;
 using SampleRange = juce::Range<SampleCount>;
@@ -65,13 +64,6 @@ float getAudioDataMagnitude (const float* data, int num);
 
 void convertIntsToFloats (juce::AudioBuffer<float>&);
 void convertFloatsToInts (juce::AudioBuffer<float>&);
-
-inline void yieldGUIThread() noexcept
-{
-   #if JUCE_WINDOWS
-    juce::Thread::yield();
-   #endif
-}
 
 //==============================================================================
 /** Converts a juce::AudioBuffer<SampleType> to a choc::buffer::BufferView. */
@@ -277,7 +269,7 @@ inline SampleType getRMS (choc::buffer::MonoView<SampleType> view)
 }
 
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
 
 namespace juce
 {

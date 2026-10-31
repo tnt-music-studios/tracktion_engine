@@ -8,13 +8,12 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** A (virtual) audio output device.
 
-    There'll be multiple instances of these, representing mono or stereo pairs of
-    output channels.
+    There'll be one or more instances of these, each one representing a group of
+    channels from a physical device.
 */
 class WaveOutputDevice  : public OutputDevice
 {
@@ -23,8 +22,9 @@ public:
     ~WaveOutputDevice() override;
 
     void resetToDefault();
+    juce::String getDeviceTypeDescription() const override          { return NEEDS_TRANS("Wave Audio Output"); }
     void setEnabled (bool) override;
-    const std::vector<ChannelIndex>& getChannels() const noexcept   { return deviceChannels; }
+    const ChannelConfiguration& getChannels() const noexcept        { return deviceDescription.channels; }
     const juce::AudioChannelSet& getChannelSet() const noexcept     { return channelSet; }
 
     void reverseChannels (bool);
@@ -33,24 +33,35 @@ public:
     void setDithered (bool);
     bool isDithered() const         { return ditheringEnabled; }
 
-    /** Returns the left channel index.
-        N.B. this doesn't take into account if the channels are reversed as the reversing
-        will be applied during the rendering stage.
-    */
+    /** @deprecated Use getChannels()[0].indexInDevice instead. */
+    [[deprecated ("Use getChannels()[0].indexInDevice instead")]]
     int getLeftChannel() const;
 
-    /** Returns the right channel index.
-        N.B. this doesn't take into account if the channels are reversed as the reversing
-        will be applied during the rendering stage.
-    */
+    /** @deprecated Use getChannels()[1].indexInDevice instead. */
+    [[deprecated ("Use getChannels()[1].indexInDevice instead")]]
     int getRightChannel() const;
 
-    /** Returns true if the output is a stereo pair. I.e. has two channels. */
+    /** @deprecated Use getChannels().getNumChannels() == 2 instead. */
+    [[deprecated ("Use getChannels().getNumChannels() == 2 instead")]]
     bool isStereoPair() const;
 
+    /** @deprecated Use setChannelConfiguration() instead. */
+    [[deprecated ("Use setChannelConfiguration() instead")]]
     void setStereoPair (bool);
+    juce::PopupMenu createChannelGroupMenu (bool includeSetAllChannelsOptions);
 
     WaveOutputDeviceInstance* createInstance (EditPlaybackContext&);
+
+    void updateLevelMeasurer (float* const* outputChannelData, int totalNumOutputChannels, int numSamples);
+
+    /** Starts a gentle 1 second 440 Hz sine test tone playing through this device's channels. */
+    void startTestTone();
+
+    /** Called on the audio thread — mixes any in-progress test tone into the device's output channels. */
+    void renderTestTone (float* const* outputChannelData, int totalNumOutputChannels, int numSamples);
+
+    WaveDeviceDescription deviceDescription;
+    LevelMeasurer levelMeasurer;
 
 protected:
     juce::String openDevice() override;
@@ -60,12 +71,23 @@ private:
     friend class DeviceManager;
     friend class WaveOutputDeviceInstance;
 
-    const std::vector<ChannelIndex> deviceChannels;
-    const juce::AudioChannelSet channelSet;
+    ChannelConfiguration originalChannels;
+    juce::AudioChannelSet channelSet;
     bool ditheringEnabled, leftRightReversed;
+    choc::SmallVector<float*, 8> meterChannelPtrs;
+
+    // Test tone state — pending* atomics are written by the message thread; the
+    // remaining members are touched only on the audio thread.
+    std::atomic<bool> testToneStartRequested { false };
+    std::atomic<int>   testTonePendingTotalSamples { 0 };
+    std::atomic<float> testTonePendingSampleRate   { 0.0f };
+    int testToneSampleIndex = -1;
+    int testToneTotalSamples = 0;
+    choc::oscillator::Sine<float> testToneSine;
 
     void loadProps();
     void saveProps();
+    void applyChannelOrdering();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveOutputDevice)
 };
@@ -79,7 +101,7 @@ public:
     void prepareToPlay (double sampleRate, int blockSizeSamples);
 
 protected:
-    Ditherer ditherers[2];
+    std::vector<Ditherer> ditherers;
     MidiMessageArray midiBuffer;
     juce::AudioBuffer<float> outputBuffer;
 
@@ -88,4 +110,4 @@ protected:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveOutputDeviceInstance)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

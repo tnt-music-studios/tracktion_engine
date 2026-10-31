@@ -46,6 +46,8 @@ public:
     void initialise(const PluginInitialisationInfo&) override           {}
     void deinitialise() override                                        {}
 
+    BusLayout getBusses() const override   { return BusLayout::singlePassThrough(); }
+
     void applyToBuffer (const PluginRenderContext& fc) override
     {
         // Apply a tanh distortion with a gain of 3.0f

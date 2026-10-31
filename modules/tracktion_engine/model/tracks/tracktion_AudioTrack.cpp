@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 struct AudioTrack::TrackMuter  : private juce::AsyncUpdater
@@ -86,14 +85,16 @@ private:
     {
         if (compareAndReset (triggerFreeze))
         {
+            // Nothing else asked for this freeze, so show why it failed here
             if (! owner.isFrozen (groupFreeze))
-                owner.setFrozen (true, Track::individualFreeze);
+                if (auto r = owner.setFrozen (true, Track::individualFreeze); r.failed())
+                    owner.edit.engine.getUIBehaviour().showWarningMessage (r.getErrorMessage());
         }
 
         if (compareAndReset (updateFreeze))
         {
             if (owner.isFrozen (Track::individualFreeze) && (! owner.hasFreezePointPlugin()))
-                owner.setFrozen (false, individualFreeze);
+                owner.unfreeze (individualFreeze);
         }
     }
 
@@ -122,11 +123,9 @@ AudioTrack::AudioTrack (Edit& ed, const juce::ValueTree& v)
     {
         WaveDeviceDescription desc;
         desc.name = itemIDString;
-        desc.channels = { ChannelIndex (0, juce::AudioChannelSet::left),
-                          ChannelIndex (1, juce::AudioChannelSet::right) };
+        desc.channels = ChannelConfiguration::stereo();
 
-        waveInputDevice = std::make_unique<WaveInputDevice> (edit.engine, TRANS("Track Wave Input"),
-                                                             desc, InputDevice::trackWaveDevice);
+        waveInputDevice = std::make_unique<WaveInputDevice> (edit.engine, desc, InputDevice::trackWaveDevice);
 
         midiInputDevice = std::make_unique<VirtualMidiInputDevice> (edit.engine, itemIDString,
                                                                     InputDevice::trackMidiDevice,
@@ -184,7 +183,7 @@ void AudioTrack::initialise()
         getClipSlotList().ensureNumberOfSlots (edit.getSceneList().getNumScenes());
 
     if (frozenIndividually && ! getFreezeFile().existsAsFile())
-        setFrozen (false, individualFreeze);
+        unfreeze (individualFreeze);
 
     output->initialise();
 }
@@ -533,6 +532,24 @@ juce::String AudioTrack::getTrackPlayabilityWarning() const
         return TRANS("This track contains wave clips which may be inaudible as the audio will be blocked by some of the track's plugins.");
     }
 
+    // Check for clips with different channel counts
+    {
+        int firstChannelCount = -1;
+
+        for (auto c : getClips())
+        {
+            if (auto audioClip = dynamic_cast<AudioClipBase*> (c))
+            {
+                auto numCh = audioClip->getActiveChannelConfiguration().getNumChannels();
+
+                if (firstChannelCount < 0)
+                    firstChannelCount = numCh;
+                else if (numCh != firstChannelCount)
+                    return TRANS("Clips have different channel formats");
+            }
+        }
+    }
+
     return {};
 }
 
@@ -607,6 +624,38 @@ bool AudioTrack::canPlayMidi() const
                     return getOutput().canPlayAudio();
 
     return false;
+}
+
+//==============================================================================
+ChannelConfiguration AudioTrack::getChannelConfiguration() const
+{
+    ChannelConfiguration result;
+    bool hasAnyClips = false;
+
+    for (auto clip : getClips())
+    {
+        if (auto audioClip = dynamic_cast<AudioClipBase*> (clip))
+        {
+            auto clipConfig = audioClip->getActiveChannelConfiguration();
+
+            if (! hasAnyClips)
+            {
+                result = clipConfig;
+                hasAnyClips = true;
+            }
+            else if (clipConfig.getNumChannels() > result.getNumChannels())
+            {
+                // Use the largest format when clips differ
+                result = clipConfig;
+            }
+        }
+    }
+
+    // Default to stereo if no audio clips
+    if (! hasAnyClips)
+        return ChannelConfiguration::stereo();
+
+    return result;
 }
 
 //==============================================================================
@@ -789,10 +838,12 @@ void AudioTrack::valueTreePropertyChanged (juce::ValueTree& v, const juce::Ident
         {
             playSlotClips.forceUpdateOfCachedValue();
 
+            // Back to the arrangement: stop the launched clips and cancel any
+            // queued to start, or they'd start later and switch the track back
             if (! playSlotClips.get())
                 for (auto cs : getClipSlotList().getClipSlots())
                     if (auto c = cs->getClip())
-                        if (auto lh = c->getLaunchHandle(); lh->getPlayingStatus() == LaunchHandle::PlayState::playing)
+                        if (auto lh = c->getLaunchHandle())
                             lh->stop ({});
         }
         else if (i == IDs::compGroup)
@@ -957,21 +1008,40 @@ bool AudioTrack::isFrozen (FreezeType t) const
                           : (t == groupFreeze ? frozen : frozenIndividually);
 }
 
-void AudioTrack::setFrozen (bool b, FreezeType type)
+juce::Result AudioTrack::setFrozen (bool b, FreezeType type)
 {
+    const auto outputsToAnotherTrack = [this]
+    {
+        return juce::Result::fail (TRANS("\"XTRKX\" outputs to another track so can't be frozen itself; "
+                                         "instead, you should freeze the track it inputs into.")
+                                     .replace ("XTRKX", getName()));
+    };
+
     if (type == individualFreeze)
     {
         if (frozenIndividually != b)
         {
             if (b && getOutput().getDestinationTrack() != nullptr)
+                return outputsToAnotherTrack();
+
+            if (auto fedTracks = b ? getTracksFedByFreezablePlugins() : juce::Array<Track*>(); ! fedTracks.isEmpty())
             {
-                edit.engine.getUIBehaviour().showWarningMessage (TRANS("Tracks which output to another track can't themselves be frozen; "
-                                                                       "instead, you should freeze the track they input into."));
+                juce::StringArray names;
+
+                for (auto t : fedTracks)
+                    names.add ("\"" + t->getName() + "\"");
+
+                return juce::Result::fail (TRANS("\"XTRKX\" can't be frozen because plugins before its Freeze Point are connected to other tracks (XLSTX) "
+                                                 "through a Rack or aux send, and freezing would break that connection.")
+                                             .replace ("XTRKX", getName())
+                                             .replace ("XLSTX", names.joinIntoString (", ")));
             }
-            else
-            {
-                frozenIndividually = b;
-            }
+
+            frozenIndividually = b;
+
+            // Freezing renders straight away and unfreezes the track if nothing was rendered
+            if (b && ! frozenIndividually)
+                return juce::Result::fail (TRANS("\"XTRKX\" has nothing to freeze").replace ("XTRKX", getName()));
         }
     }
     else
@@ -989,17 +1059,14 @@ void AudioTrack::setFrozen (bool b, FreezeType type)
                 };
 
                 if (b && (getOutput().getDestinationTrack() != nullptr || outputsToSubmixTrack()))
-                {
-                    edit.engine.getUIBehaviour().showWarningMessage (TRANS("Tracks which output to another track can't themselves be frozen; "
-                                                                           "instead, you should freeze the track they input into."));
-                }
-                else
-                {
-                    frozen = b;
-                }
+                    return outputsToAnotherTrack();
+
+                frozen = b;
             }
         }
     }
+
+    return juce::Result::ok();
 }
 
 bool AudioTrack::canContainPlugin (Plugin* p) const
@@ -1068,14 +1135,57 @@ void AudioTrack::freezeTrack()
     freezePlugins (juce::Range<int> (0, getIndexOfFreezePoint()));
     setMute (shouldBeMuted);
 
+    // setFrozen reports this as a failure
     if (! r.destFile.existsAsFile())
     {
-        edit.engine.getUIBehaviour().showWarningMessage (TRANS("Nothing to freeze"));
-        setFrozen (false, individualFreeze);
+        unfreeze (individualFreeze);
         return;
     }
 
     changed();
+}
+
+juce::Array<Track*> AudioTrack::getTracksFedByFreezablePlugins()
+{
+    // Without a Freeze Point, freezing inserts one at the default position (or the end)
+    auto freezeIndex = getIndexOfFreezePoint();
+
+    if (freezeIndex < 0)
+        freezeIndex = getIndexOfDefaultFreezePoint();
+
+    if (freezeIndex < 0)
+        freezeIndex = pluginList.size();
+
+    juce::Array<Track*> tracks;
+
+    auto addOwnerTrack = [this, &tracks] (Plugin& p)
+    {
+        if (auto t = p.getOwnerTrack(); t != nullptr && t != this)
+            tracks.addIfNotAlreadyThere (t);
+    };
+
+    for (int i = 0; i < std::min (freezeIndex, pluginList.size()); ++i)
+    {
+        auto p = pluginList[i];
+
+        if (! p->isEnabled())
+            continue;
+
+        if (auto rackInstance = dynamic_cast<RackInstance*> (p); rackInstance != nullptr && rackInstance->type != nullptr)
+        {
+            for (auto instance : getRackInstancesInEditForType (*rackInstance->type))
+                addOwnerTrack (*instance);
+        }
+        else if (auto send = dynamic_cast<AuxSendPlugin*> (p))
+        {
+            for (auto other : edit.getPluginCache().getPlugins())
+                if (auto auxReturn = dynamic_cast<AuxReturnPlugin*> (other))
+                    if (auxReturn->busNumber == send->getBusNumber())
+                        addOwnerTrack (*auxReturn);
+        }
+    }
+
+    return tracks;
 }
 
 int AudioTrack::getIndexOfFreezePoint()
@@ -1216,4 +1326,4 @@ juce::Array<Track*> AudioTrack::findSidechainSourceTracks() const
     return srcTracks;
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

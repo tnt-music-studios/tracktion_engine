@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /**
     A Node that introduces latency to balance the latency at the root Node and its position in the graph.
@@ -59,7 +58,7 @@ public:
         const auto inputProps = input->getNodeProperties();
         const auto nodeProps = getNodeProperties();
 
-        if (info.enableNodeMemorySharing && input->numOutputNodes == 1)
+        if (info.enableNodeMemorySharing && input->numOutputNodes == 1 && input->canShareOutputBuffer())
         {
             const auto inputNumChannels = inputProps.numberOfChannels;
             const auto desiredNumChannels = nodeProps.numberOfChannels;
@@ -163,4 +162,4 @@ private:
     }
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 class Modifier::ValueFifo
@@ -28,7 +27,7 @@ public:
     {
         jassert ((size_t) numSamplesDelta < values.size());
 
-        const float delta = (value - lastValue) / numSamplesDelta;
+        const float delta = (value - lastValue) / float (numSamplesDelta);
         float alpha = lastValue;
 
         while (--numSamplesDelta >= 0)
@@ -58,21 +57,17 @@ public:
 
     [[nodiscard]] std::vector<float> getValues (TimeDuration numSecondsBeforeNow) const
     {
-        std::vector<float> v;
-
         const auto numValues = std::min (values.size(),
                                          (size_t) tracktion::toSamples (numSecondsBeforeNow, sampleRate));
-        v.reserve (numValues);
+        std::vector<float> v (numValues);
 
-        int index = (int) headIndex;
-
-        for (int i = (int) numValues; --i >= 0;)
-        {
-            v.push_back (values[(size_t) index]);
-
-            if (--index < 0)
-                index = (int) values.size() - 1;
-        }
+        // Most recent first: back from the head to the start of the
+        // buffer, then back from the end of the buffer for the rest
+        const auto numBeforeWrap = std::min (numValues, headIndex + 1);
+        const auto head = values.begin() + (std::ptrdiff_t) (headIndex + 1);
+        std::reverse_copy (head - (std::ptrdiff_t) numBeforeWrap, head, v.begin());
+        std::reverse_copy (values.end() - (std::ptrdiff_t) (numValues - numBeforeWrap), values.end(),
+                           v.begin() + (std::ptrdiff_t) numBeforeWrap);
 
         return v;
     }
@@ -305,7 +300,11 @@ bool ModifierList::isSuitableType (const juce::ValueTree& v) const
 Modifier* ModifierList::createNewObject (const juce::ValueTree& v)
 {
     CRASH_TRACER
-    auto m = findModifierForID (edit, EditItemID::readOrCreateNewID (edit, v));
+    // Look up the cache rather than the lists so that a Modifier being moved between
+    // tracks (momentarily removed from one list and not yet added to another, but still
+    // alive) is reused instead of being duplicated
+    const auto id = EditItemID::readOrCreateNewID (edit, v);
+    Modifier::Ptr m = dynamic_cast<Modifier*> (edit.automatableEditItemCache.findItem (id));
 
     if (m == nullptr)
     {
@@ -345,4 +344,4 @@ Modifier::Ptr findModifierForID (ModifierList& ml, EditItemID modifierID)
     return {};
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,7 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine
 {
 
 struct ThreadedEditFileWriter   : private juce::Thread
@@ -86,12 +86,12 @@ struct SharedEditFileDataCache
 
         void refresh()
         {
-            editSnapshot->refreshFromProjectManager();
+            editSnapshot->refresh();
         }
 
         Edit& edit;
         juce::Time timeOfLastSave { juce::Time::getCurrentTime() };
-        EditSnapshot::Ptr editSnapshot { EditSnapshot::getEditSnapshot (edit.engine, edit.getProjectItemID()) };
+        EditSnapshot::Ptr editSnapshot { EditSnapshot::getEditSnapshot (edit.engine, edit.editFileRetriever()) };
     };
 
     SharedEditFileDataCache() = default;
@@ -208,7 +208,8 @@ bool EditFileOperations::writeToFile (const juce::File& file, bool writeQuickBin
     return ok;
 }
 
-static bool editSaveError (Edit& edit, const juce::File& file, bool warnOfFailure)
+static void editSaveError (Edit& edit, const juce::File& file, bool warnOfFailure,
+                           std::function<void (bool)> callback)
 {
     // failed..
     TRACKTION_LOG_ERROR ("Can't write to edit file: " + file.getFullPathName());
@@ -222,22 +223,47 @@ static bool editSaveError (Edit& edit, const juce::File& file, bool warnOfFailur
         if (! file.hasWriteAccess())
             s << "\n\n(" << TRANS("File or directory is read-only") << ")";
 
-        return edit.engine.getUIBehaviour().showOkCancelAlertBox (TRANS("Save edit"), s,
-                                                                  TRANS("Carry on anyway"));
+        edit.engine.getUIBehaviour().showOkCancelAlertBoxAsync (TRANS("Save edit"), s,
+                                                                TRANS("Carry on anyway"),
+                                                                TRANS("Cancel"),
+                                                                [callback] (bool okPressed)
+                                                                {
+                                                                    if (callback)
+                                                                        callback (okPressed);
+                                                                });
+        return;
     }
 
-    return false;
+    if (callback)
+        callback (false);
 }
 
-bool EditFileOperations::save (bool warnOfFailure,
+void EditFileOperations::save (bool warnOfFailure,
                                bool forceSaveEvenIfNotModified,
-                               bool offerToDiscardChanges)
+                               bool offerToDiscardChanges,
+                               std::function<void (bool)> callback)
 {
     CRASH_TRACER
     auto editFile = getEditFile();
 
     if (editFile == juce::File())
-        return false;
+    {
+        if (callback)
+            callback (false);
+
+        return;
+    }
+
+    // Something is part-way through an operation that has temporarily changed the
+    // Edit and will restore it (see Edit::SaveInhibitor), so writing now would
+    // persist state the user never asked for
+    if (edit.isSaveInhibited())
+    {
+        if (callback)
+            callback (false);
+
+        return;
+    }
 
     CustomControlSurface::saveAllSettings (edit.engine);
     edit.getParameterControlMappings().saveToEdit();
@@ -245,7 +271,10 @@ bool EditFileOperations::save (bool warnOfFailure,
     auto tempFile = getTempVersionFile();
 
     if (! saveTempVersion (true))
-        return editSaveError (edit, tempFile, warnOfFailure);
+    {
+        editSaveError (edit, tempFile, warnOfFailure, callback);
+        return;
+    }
 
     if (forceSaveEvenIfNotModified || edit.hasChangedSinceSaved())
     {
@@ -255,24 +284,69 @@ bool EditFileOperations::save (bool warnOfFailure,
 
         if (offerToDiscardChanges)
         {
-            const int r = edit.engine.getUIBehaviour().showYesNoCancelAlertBox (TRANS("Closing Edit"),
-                                                                                TRANS("Do you want to save your changes to \"XNMX\" before closing it?")
-                                                                                  .replace ("XNMX", edit.getName()),
-                                                                                TRANS("Save"),
-                                                                                TRANS("Discard changes"));
+            auto editRef = makeSafeRef (edit);
 
-            if (r != 1)
-            {
-                tempFile.deleteFile();
-                return r == 2;
-            }
+            edit.engine.getUIBehaviour().showYesNoCancelAlertBoxAsync (TRANS("Closing Edit"),
+                TRANS("Do you want to save your changes to \"XNMX\" before closing it?")
+                  .replace ("XNMX", edit.getName()),
+                TRANS("Save"),
+                TRANS("Discard changes"),
+                TRANS("Cancel"),
+                [editRef, editFile, tempFile, warnOfFailure, callback] (int r)
+                {
+                    if (r != 1)
+                    {
+                        tempFile.deleteFile();
+
+                        if (callback)
+                            callback (r == 2);
+
+                        return;
+                    }
+
+                    if (auto ed = editRef.get())
+                    {
+                        EditFileOperations ops (*ed);
+
+                        if (ops.editSnapshot != nullptr)
+                            ops.editSnapshot->refreshCacheAndNotifyListeners();
+
+                        if (! tempFile.moveFileTo (editFile))
+                        {
+                            editSaveError (*ed, editFile, warnOfFailure, callback);
+                            return;
+                        }
+
+                        ed->engine.getEngineBehaviour().editHasBeenSaved (*ed, editFile);
+
+                        tempFile.deleteFile();
+
+                        if (auto item = getProjectItemForEdit (*ed))
+                            item->setLength (ed->getLength().inSeconds());
+
+                        ed->resetChangedStatus();
+
+                        if (callback)
+                            callback (true);
+                    }
+                    else
+                    {
+                        if (callback)
+                            callback (false);
+                    }
+                });
+
+            return;
         }
 
         if (editSnapshot != nullptr)
             editSnapshot->refreshCacheAndNotifyListeners();
 
         if (! tempFile.moveFileTo (editFile))
-            return editSaveError (edit, editFile, warnOfFailure);
+        {
+            editSaveError (edit, editFile, warnOfFailure, callback);
+            return;
+        }
 
         edit.engine.getEngineBehaviour().editHasBeenSaved (edit, editFile);
     }
@@ -283,118 +357,168 @@ bool EditFileOperations::save (bool warnOfFailure,
         item->setLength (edit.getLength().inSeconds());
 
     edit.resetChangedStatus();
-    return true;
+
+    if (callback)
+        callback (true);
 }
 
-bool EditFileOperations::saveAs()
+void EditFileOperations::saveAs()
 {
-   #if JUCE_MODAL_LOOPS_PERMITTED
     CRASH_TRACER
     auto newEditName = getNonExistentSiblingWithIncrementedNumberSuffix (getEditFile(), false);
 
-    juce::FileChooser chooser (TRANS("Save As") + "...",
-                               newEditName,
-                               juce::String ("*") + editFileSuffix);
+    auto fc = std::make_shared<juce::FileChooser> (TRANS("Save As") + "...",
+                                                    newEditName,
+                                                    juce::String ("*") + editFileSuffix);
 
-    if (chooser.browseForFileToSave (false))
-        return saveAs (chooser.getResult().withFileExtension (editFileSuffix));
-   #endif
-
-    return false;
+    fc->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                     [fc, editRef = makeSafeRef (edit)] (const juce::FileChooser&)
+                     {
+                         if (fc->getResult() != juce::File())
+                             if (auto ed = editRef.get())
+                                 EditFileOperations (*ed).saveAs (fc->getResult().withFileExtension (editFileSuffix));
+                     });
 }
 
-bool EditFileOperations::saveAs (const juce::File& f, bool forceOverwriteExisting)
+void EditFileOperations::saveAs (const juce::File& f, bool forceOverwriteExisting,
+                                  std::function<void (bool)> callback)
 {
     if (f == getEditFile())
-        return save (true, false, false);
+    {
+        save (true, false, false, callback);
+        return;
+    }
+
+    auto doSaveAs = [f, callback, editRef = makeSafeRef (edit)]
+    {
+        if (auto ed = editRef.get())
+        {
+            if (auto project = getProjectForEdit (*ed))
+            {
+                if (auto item = getProjectItemForEdit (*ed))
+                {
+                    CRASH_TRACER
+
+                    if (f.create())
+                    {
+                        if (auto newItem = project->createNewItem (f, item->getType(),
+                                                                f.getFileNameWithoutExtension(),
+                                                                item->getDescription(),
+                                                                item->getCategory(),
+                                                                true))
+                        {
+                            EditFileOperations ops (*ed);
+                            auto oldTempFile = ops.getTempVersionFile();
+
+                            newItem->copyAllPropertiesFrom (*item);
+                            newItem->setName (f.getFileNameWithoutExtension(), ProjectItem::SetNameMode::forceNoRename);
+
+                            jassert (ed->getProjectItemRef() != newItem->getProjectItemRef());
+                            ed->setProjectItemRef (newItem->getProjectItemRef());
+                            ops.editSnapshot = EditSnapshot::getEditSnapshot (ed->engine, newItem->getSourceFile());
+
+                            ops.save (true, true, false,
+                                    [ed, oldTempFile, callback] (bool ok)
+                                    {
+                                        if (ok)
+                                            oldTempFile.deleteFile();
+
+                                        ed->sendSourceFileUpdate();
+
+                                        if (callback)
+                                            callback (ok);
+                                    });
+
+                            return;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                CRASH_TRACER
+
+                CustomControlSurface::saveAllSettings (ed->engine);
+                ed->getParameterControlMappings().saveToEdit();
+
+                EditFileOperations ops (*ed);
+                auto tempFile = ops.getTempVersionFile();
+
+                if (tempFile == juce::File())
+                {
+                    tempFile = getTempVersionOfEditFile (f);
+
+                    if (! ops.writeToFile (tempFile, false))
+                    {
+                        editSaveError (*ed, tempFile, true, callback);
+                        return;
+                    }
+                }
+                else
+                {
+                    if (! ops.saveTempVersion (true))
+                    {
+                        editSaveError (*ed, tempFile, true, callback);
+                        return;
+                    }
+                }
+
+                if (ops.editSnapshot != nullptr)
+                    ops.editSnapshot->refreshCacheAndNotifyListeners();
+
+                if (f.existsAsFile())
+                    f.deleteFile();
+
+                if (! tempFile.moveFileTo (f))
+                {
+                    editSaveError (*ed, f, true, callback);
+                    return;
+                }
+
+                tempFile.deleteFile();
+
+                ed->resetChangedStatus();
+                ed->engine.getEngineBehaviour().editHasBeenSaved (*ed, f);
+
+                if (callback)
+                    callback (true);
+
+                return;
+            }
+        }
+
+        if (callback)
+            callback (false);
+    };
 
     if (f.existsAsFile() && ! forceOverwriteExisting)
     {
-        if (! edit.engine.getUIBehaviour().showOkCancelAlertBox (TRANS("Save Edit") + "...",
-                                                                 TRANS("The file XFNX already exists. Do you want to overwrite it?")
-                                                                   .replace ("XFNX", "\n\n" + f.getFullPathName() + "\n\n"),
-                                                                 TRANS("Overwrite")))
-            return false;
+        edit.engine.getUIBehaviour().showOkCancelAlertBoxAsync (TRANS("Save Edit") + "...",
+                                                                TRANS("The file XFNX already exists. Do you want to overwrite it?")
+                                                                  .replace ("XFNX", "\n\n" + f.getFullPathName() + "\n\n"),
+                                                                TRANS("Overwrite"),
+                                                                TRANS("Cancel"),
+                                                                [doSaveAs, callback] (bool okPressed)
+                                                                {
+                                                                    if (okPressed)
+                                                                        doSaveAs();
+                                                                    else if (callback)
+                                                                        callback (false);
+                                                                });
+        return;
     }
 
-    if (auto project = getProjectForEdit (edit))
-    {
-        if (auto item = getProjectItemForEdit (edit))
-        {
-            if (f.create())
-            {
-                if (auto newItem = project->createNewItem (f, item->getType(),
-                                                           f.getFileNameWithoutExtension(),
-                                                           item->getDescription(),
-                                                           item->getCategory(),
-                                                           true))
-                {
-                    auto oldTempFile = getTempVersionFile();
-
-                    newItem->copyAllPropertiesFrom (*item);
-                    newItem->setName (f.getFileNameWithoutExtension(), ProjectItem::SetNameMode::forceNoRename);
-
-                    jassert (edit.getProjectItemID() != newItem->getID());
-                    edit.setProjectItemID (newItem->getID());
-                    editSnapshot = EditSnapshot::getEditSnapshot (edit.engine, edit.getProjectItemID());
-
-                    const bool ok = save (true, true, false);
-
-                    if (ok)
-                        oldTempFile.deleteFile();
-
-                    edit.sendSourceFileUpdate();
-                    return ok;
-                }
-            }
-        }
-    }
-    else
-    {
-        CRASH_TRACER
-
-        CustomControlSurface::saveAllSettings (edit.engine);
-        edit.getParameterControlMappings().saveToEdit();
-
-        auto tempFile = getTempVersionFile();
-
-        if (tempFile == juce::File())
-        {
-            tempFile = getTempVersionOfEditFile (f);
-
-            if (! writeToFile (tempFile, false))
-                return editSaveError (edit, tempFile, true);
-        }
-        else
-        {
-            if (! saveTempVersion (true))
-                return editSaveError (edit, tempFile, true);
-        }
-
-        if (editSnapshot != nullptr)
-            editSnapshot->refreshCacheAndNotifyListeners();
-
-        if (f.existsAsFile())
-            f.deleteFile();
-
-        if (! tempFile.moveFileTo (f))
-            return editSaveError (edit, f, true);
-
-        tempFile.deleteFile();
-
-        edit.resetChangedStatus();
-        edit.engine.getEngineBehaviour().editHasBeenSaved (edit, f);
-
-        return true;
-    }
-
-    jassertfalse;
-    return false;
+    doSaveAs();
 }
 
 bool EditFileOperations::saveTempVersion (bool forceSaveEvenIfUnchanged)
 {
     CRASH_TRACER
+
+    // As in save(): nothing should be written whilst the Edit is temporarily
+    // modified. Not an error - there just isn't anything safe to write yet.
+    if (edit.isSaveInhibited())
+        return true;
 
     if (! (forceSaveEvenIfUnchanged || edit.hasChangedSinceSaved()))
         return true;
@@ -425,7 +549,7 @@ void EditFileOperations::updateEditFiles()
 }
 
 //==============================================================================
-juce::ValueTree loadEditFromProjectManager (ProjectManager& pm, ProjectItemID itemID)
+juce::ValueTree loadEditFromProjectManager (ProjectManager& pm, ProjectItemRef itemID)
 {
     if (auto item = pm.getProjectItem (itemID))
         return loadEditFromFile (pm.engine, item->getSourceFile(), itemID);
@@ -433,12 +557,49 @@ juce::ValueTree loadEditFromProjectManager (ProjectManager& pm, ProjectItemID it
     return {};
 }
 
-std::unique_ptr<Edit> loadEditForExamining (ProjectManager& pm, ProjectItemID itemID, Edit::EditRole role, Edit::LoadContext* loadContext)
+std::unique_ptr<Edit> loadEditForExamining (ProjectManager& pm, ProjectItemRef ref, Edit::EditRole role, Edit::LoadContext* loadContext)
 {
-    return Edit::createEditForExamining (pm.engine, loadEditFromProjectManager (pm, itemID), role, loadContext);
+    if (auto pid = ref.getProjectItemID())
+    {
+        JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wdeprecated-declarations")
+        JUCE_BEGIN_IGNORE_WARNINGS_MSVC (4996)
+        return Edit::createEditForExamining (pm.engine, loadEditFromProjectManager (pm, ref), role, loadContext);
+        JUCE_END_IGNORE_WARNINGS_GCC_LIKE
+        JUCE_END_IGNORE_WARNINGS_MSVC
+    }
+
+    if (auto p = ref.getProject())
+    {
+        assert (p->isFolderBased());
+        auto editFile = ref.resolve (p->engine);
+        auto edit = loadEditFromFile (p->engine, editFile, role, loadContext);
+
+        if (edit)
+            edit->setProjectItemRef (ref);
+
+        return edit;
+    }
+
+    // Finally try and get the Edit from the project manager
+    if (auto item = pm.getProjectItem (ref))
+    {
+        if (auto p = item->getProject())
+        {
+            auto editFile = ref.resolve (p->engine, p->getDefaultDirectory());
+            auto edit = loadEditFromFile (p->engine, editFile, role, loadContext);
+
+            if (edit)
+                edit->setProjectItemRef (ref);
+
+            return edit;
+        }
+    }
+
+
+    return {};
 }
 
-juce::ValueTree loadEditFromFile (Engine& e, const juce::File& f, ProjectItemID itemID)
+juce::ValueTree loadEditFromFile (Engine& e, const juce::File& f, ProjectItemRef itemID)
 {
     CRASH_TRACER
     juce::ValueTree state;
@@ -477,11 +638,12 @@ juce::ValueTree loadEditFromFile (Engine& e, const juce::File& f, ProjectItemID 
 
 juce::ValueTree createEmptyEdit (Engine& e)
 {
-    return loadEditFromFile (e, {}, ProjectItemID::createNewID (0));
+    return loadEditFromFile (e, {}, ProjectItemID::createNewID (ProjectID{}));
 }
 
 static std::unique_ptr<Edit> createEdit (Engine& engine, const juce::ValueTree& editState,
-                                         Edit::EditFileRetriever editFileRetriever, Edit::EditRole role)
+                                         Edit::EditFileRetriever editFileRetriever, Edit::EditRole role,
+                                         Edit::LoadContext* loadContext)
 {
     if (! editState.isValid())
         return {};
@@ -489,47 +651,49 @@ static std::unique_ptr<Edit> createEdit (Engine& engine, const juce::ValueTree& 
     auto id = ProjectItemID::fromProperty (editState, IDs::projectID);
 
     if (! id.isValid())
-        id = ProjectItemID::createNewID (0);
+        id = ProjectItemID::createNewID (ProjectID{});
 
     return Edit::createEdit (Edit::Options
-    {
-        engine,
-        editState,
-        id,
-        role,
-        nullptr,
-        Edit::getDefaultNumUndoLevels(),
-        std::move (editFileRetriever),
-        {}
-    });
+                             {
+                                 engine,
+                                 editState,
+                                 id,
+                                 role,
+                                 loadContext,
+                                 Edit::getDefaultNumUndoLevels(),
+                                 std::move (editFileRetriever),
+                                 {}
+                             });
 }
 
-std::unique_ptr<Edit> loadEditFromFile (Engine& engine, const juce::File& editFile, Edit::EditRole role)
+std::unique_ptr<Edit> loadEditFromFile (Engine& engine, const juce::File& editFile, Edit::EditRole role,
+                                        Edit::LoadContext* loadContext)
 {
     auto editState = loadEditFromFile (engine, editFile, ProjectItemID{});
-    return createEdit (engine, editState, [editFile] { return editFile; }, role);
+    return createEdit (engine, editState, [editFile] { return editFile; }, role, loadContext);
 }
 
-std::unique_ptr<Edit> loadEditFromState (Engine& engine, const juce::ValueTree& editState, Edit::EditRole role)
+std::unique_ptr<Edit> loadEditFromState (Engine& engine, const juce::ValueTree& editState, Edit::EditRole role,
+                                         Edit::LoadContext* loadContext)
 {
-    return createEdit (engine, editState, {}, role);
+    return createEdit (engine, editState, {}, role, loadContext);
 }
 
 std::unique_ptr<Edit> createEmptyEdit (Engine& engine, const juce::File& editFile)
 {
-    auto id = ProjectItemID::createNewID (0);
+    auto id = ProjectItemID::createNewID (ProjectID{});
 
     return Edit::createEdit (Edit::Options
-    {
-        engine,
-        loadEditFromFile (engine, {}, id),
-        id,
-        Edit::forEditing,
-        nullptr,
-        Edit::getDefaultNumUndoLevels(),
-        [editFile] { return editFile; },
-        {}
-    });
+                             {
+                                 engine,
+                                 loadEditFromFile (engine, {}, id),
+                                 id,
+                                 Edit::forEditing,
+                                 nullptr,
+                                 Edit::getDefaultNumUndoLevels(),
+                                 [editFile] { return editFile; },
+                                 {}
+                             });
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

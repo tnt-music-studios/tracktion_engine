@@ -351,6 +351,10 @@ void AudioClipComponent::drawWaveform (Graphics& g, te::AudioClipBase& c, te::Sm
 
     g.setColour (colour);
 
+    const auto activeChannels = c.getActiveChannelConfiguration();
+    const bool useLeft = activeChannels.containsDeviceChannel (0);
+    const bool useRight = activeChannels.containsDeviceChannel (1);
+
     if (usesTimeStretchedProxy)
     {
         const Rectangle<int> area (left + xOffset, y, right - left, h);
@@ -359,7 +363,7 @@ void AudioClipComponent::drawWaveform (Graphics& g, te::AudioClipBase& c, te::Sm
         {
             drawChannels (g, thumb, area,
                           getTimeRangeForDrawing (left, right),
-                          c.isLeftChannelActive(), c.isRightChannelActive(),
+                          useLeft, useRight,
                           gainL, gainR);
         }
     }
@@ -373,7 +377,7 @@ void AudioClipComponent::drawWaveform (Graphics& g, te::AudioClipBase& c, te::Sm
         drawChannels (g, thumb,
                       { left + xOffset, y, right - left, h },
                       { t1, t2 },
-                      c.isLeftChannelActive(), c.isRightChannelActive(),
+                      useLeft, useRight,
                       gainL, gainR);
     }
 }
@@ -442,7 +446,7 @@ void drawMidiClip (juce::Graphics& g, te::MidiClip& mc, juce::Rectangle<int> r, 
 
         double y = (1.0 - double (n->getNoteNumber()) / 127.0) * r.getHeight();
 
-        g.setColour (Colours::white.withAlpha (n->getVelocity() / 127.0f));
+        g.setColour (Colours::white.withAlpha (static_cast<float> (n->getVelocity()) / 127.0f));
         g.drawLine (float (t1), float (y), float (t2), float (y));
     }
 }
@@ -475,7 +479,7 @@ void MidiClipComponent::paint (Graphics& g)
 
                 double y = (1.0 - double (n->getNoteNumber()) / 127.0) * getHeight();
 
-                g.setColour (Colours::white.withAlpha (n->getVelocity() / 127.0f));
+                g.setColour (Colours::white.withAlpha (static_cast<float> (n->getVelocity()) / 127.0f));
                 g.drawLine (float (t1), float (y), float (t2), float (y));
             }
         }

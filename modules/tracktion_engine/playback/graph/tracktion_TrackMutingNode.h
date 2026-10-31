@@ -8,7 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
+namespace tracktion::inline engine
 {
 
 /**
@@ -27,6 +27,13 @@ public:
 
     /** Call once per block to update the mute status. */
     void update();
+
+    /** Forces the track's contents to keep processing while the track is muted,
+        so it can still feed sidechains, aux buses and racks; the track's own
+        output stays muted. Render graphs call this for stem source tracks.
+        @see CreateNodeParams::tracksToProcessWhileMuted
+    */
+    void setKeepProcessingWhileMuted()          { callInputWhileMuted = true; }
 
     //==============================================================================
     /** Returns true if the track's mix bus should be audible. */
@@ -98,4 +105,4 @@ private:
     void sendAllNotesOffIfDesired (MidiMessageArray&);
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

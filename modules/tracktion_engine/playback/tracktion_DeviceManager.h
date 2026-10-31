@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class HostedAudioDeviceInterface;
 
@@ -135,22 +134,48 @@ public:
     juce::String getDefaultWaveInDeviceID() const               { return defaultWaveInID; }
 
     std::vector<WaveOutputDevice*> getWaveOutputDevices();
-    void setWaveOutChannelsEnabled (const std::vector<ChannelIndex>&, bool);
-    void setDeviceOutChannelStereo (int channelNum, bool isStereoPair);
-    bool isDeviceOutChannelStereo (int chan) const              { return ! outMonoChans[chan / 2]; }
-    bool isDeviceOutEnabled (int chanNum)                       { return outEnabled[chanNum]; }
-
     std::vector<WaveInputDevice*> getWaveInputDevices();
-    void setWaveInChannelsEnabled (const std::vector<ChannelIndex>&, bool);
-    void setDeviceInChannelStereo (int channelNum, bool isStereoPair);
-    bool isDeviceInChannelStereo (int chan) const               { return inStereoChans[chan / 2]; }
-    bool isDeviceInEnabled (int chanNum)                        { return inEnabled[chanNum]; }
 
-    void enableAllWaveInputs();
-    void enableAllWaveOutputs();
+    void setDeviceEnabled (WaveOutputDevice&, bool);
+    void setDeviceEnabled (WaveInputDevice&, bool);
 
-    void setAllWaveInputsToStereoPair();
-    void setAllWaveOutputsToStereoPair();
+    void setDeviceNumChannels (WaveOutputDevice&, uint32_t numChannels);
+    void setDeviceNumChannels (WaveInputDevice&, uint32_t numChannels);
+
+    void setAllWaveInputsToNumChannels (uint32_t numChannels);
+    void setAllWaveOutputsToNumChannels (uint32_t numChannels);
+
+    juce::StringArray getPossibleChannelGroupsForDevice (WaveOutputDevice&, uint32_t maxNumChannels) const;
+    juce::StringArray getPossibleChannelGroupsForDevice (WaveInputDevice&, uint32_t maxNumChannels) const;
+
+    //==============================================================================
+    /** Wave device channel-grouping layout presets.
+
+        The way a physical device's channels are grouped into WaveInputDevice and
+        WaveOutputDevice instances is normally stored per-device-type and lost when
+        the device changes. These methods let that grouping be captured as a named
+        preset (stored in the global PropertyStorage) and recalled at any time, even
+        onto a different device - the recalled layout is fitted to whatever device is
+        currently active.
+    */
+
+    /** Returns the current channel grouping as an XML layout (an AUDIODEVICE_LAYOUT element). */
+    juce::XmlElement getCurrentWaveDeviceLayout() const;
+
+    /** Applies a previously captured layout to the current device, rebuilding the wave devices. */
+    void applyWaveDeviceLayout (const juce::XmlElement&);
+
+    /** Returns the names of all stored channel-layout presets. */
+    juce::StringArray getWaveDeviceLayoutPresetNames();
+
+    /** Stores the current channel grouping as a named preset (overwriting any preset with the same name). */
+    void saveWaveDeviceLayoutPreset (const juce::String& name);
+
+    /** Recalls a named preset and applies it to the current device. */
+    void loadWaveDeviceLayoutPreset (const juce::String& name);
+
+    /** Deletes a named preset. */
+    void deleteWaveDeviceLayoutPreset (const juce::String& name);
 
     //==============================================================================
     int getNumMidiOutDevices() const                            { return (int) midiOutputs.size(); }
@@ -243,6 +268,7 @@ public:
     */
     std::function<void(InputDevice*)> warnOfWastedMidiMessagesFunction;
 
+    static constexpr uint32_t maxNumChannelsPerDevice = 128;
 
 private:
     //==============================================================================
@@ -255,8 +281,8 @@ private:
     int maxBlockSize = 0;
 
     int defaultNumInputChannelsToOpen = 512, defaultNumOutputChannelsToOpen = 512;
-    juce::BigInteger outEnabled, inEnabled, activeOutChannels, outMonoChans, inStereoChans;
     juce::String defaultWaveOutID, defaultMidiOutID, defaultWaveInID, defaultMidiInID;
+    std::vector<int> activeOutputChannels;
 
     int midiRescanIntervalSeconds = 4;
     bool onlyRescanMidiOnHardwareChange = true;
@@ -266,11 +292,10 @@ private:
     // is applied or a pending change later nets out to no change.
     bool midiDeviceListUpdateDeferred = false;
 
+    WaveDeviceDescriptionList deviceDescriptionList;
+
     struct MIDIDeviceList;
     std::unique_ptr<MIDIDeviceList> lastMIDIDeviceList;
-
-    struct AvailableWaveDeviceList;
-    std::unique_ptr<AvailableWaveDeviceList> lastAvailableWaveDeviceList;
 
     struct PrepareToStartCaller;
     std::unique_ptr<PrepareToStartCaller> prepareToStartCaller;
@@ -301,11 +326,11 @@ private:
     void reloadAllContextDevices();
 
     void loadSettings();
-    void sanityCheckEnabledChannels();
 
     bool usesHardwareMidiDevices();
     void timerCallback() override;
 
+    void deviceListChanged (bool);
     void handleAsyncUpdate() override;
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
@@ -320,7 +345,14 @@ private:
                                         float* const* outputChannelData, int totalNumOutputChannels,
                                         int numSamples);
 
+    // Deprecated: these legacy methods have been removed as we move to a more flexible
+    // channel layout system. Use methods in the wave devices instead.
+    bool isDeviceOutChannelStereo (int) const;
+    bool isDeviceOutEnabled (int);
+    bool isDeviceInChannelStereo (int) const;
+    bool isDeviceInEnabled (int);
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DeviceManager)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

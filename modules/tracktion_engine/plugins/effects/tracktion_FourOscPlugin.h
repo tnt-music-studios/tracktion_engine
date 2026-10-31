@@ -7,8 +7,7 @@
 */
 
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 class FODelay;
 class FOChorus;
@@ -179,7 +178,8 @@ public:
     juce::String getShortName (int) override            { return "4OSC"; }
     juce::String getSelectableDescription() override    { return TRANS("4OSC Plugin"); }
 
-    int getNumOutputChannelsGivenInputs (int numInputChannels) override { return juce::jmin (numInputChannels, 2); }
+    int getNumOutputChannelsGivenInputs (int) override                 { return 2; }
+    BusLayout getBusses() const override   { return BusLayout::singleStereoInOut(); }
 
     void initialise (const PluginInitialisationInfo&) override;
     void deinitialise() override;
@@ -191,7 +191,6 @@ public:
 
     //==============================================================================
     bool takesMidiInput() override                      { return true; }
-    bool takesAudioInput() override                     { return false; }
     bool isSynth() override                             { return true; }
     bool producesAudioWhenNoAudioInput() override       { return true; }
     double getTailLength() const override               { return ampRelease->getCurrentValue(); }
@@ -391,4 +390,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FourOscPlugin)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,14 +8,22 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 // JUCE Changed the format of PluginDescription::createIdentifierString
 // breaking all our saved files. This reverts to the old format
 juce::String createIdentifierString (const juce::PluginDescription&);
 
+#if TRACKTION_ENABLE_ARA
+class ARAPluginBinding;
+#endif
 
+
+/** Wraps a juce::AudioPluginInstance (VST2, VST3, AU, etc.) as a tracktion Plugin.
+
+    Handles lifecycle (async loading, state persistence), parameter bridging,
+    bus layout management, and dry/wet mixing for hosted third-party plugins.
+*/
 class ExternalPlugin  : public Plugin
 {
 public:
@@ -28,11 +36,14 @@ public:
 
     void selectableAboutToBeDeleted() override;
 
+    /** Creates the ValueTree state for inserting an ExternalPlugin into an Edit. */
     static juce::ValueTree create (Engine&, const juce::PluginDescription&);
 
     void processingChanged() override;
 
     //==============================================================================
+    // Initialisation & lifecycle
+
     void initialiseFully() override;
     void forceFullReinitialise();
 
@@ -47,10 +58,21 @@ public:
 
     static const char* xmlTypeName;
 
+    //==============================================================================
+    // State persistence
+
     void flushPluginStateToValueTree() override;
+
+    /** Writes the current bus layout to the plugin's ValueTree state. */
     void flushBusesLayoutToValueTree();
+
     void restorePluginStateFromValueTree (const juce::ValueTree&) override;
+
+    /** Extracts the raw plugin state blob from the ValueTree. */
     void getPluginStateFromTree (juce::MemoryBlock&);
+
+    //==============================================================================
+    // Processing & runtime overrides
 
     void updateFromMirroredPluginIfNeeded (Plugin&) override;
 
@@ -61,12 +83,19 @@ public:
     void setEnabled (bool enabled) override;
 
     juce::Array<Exportable::ReferencedItem> getReferencedItems() override;
-    void reassignReferencedItem (const ReferencedItem&, ProjectItemID newID, double newStartTime) override;
+    void reassignReferencedItem (const ReferencedItem&, ProjectItemRef newRef, double newStartTime) override;
 
     void applyToBuffer (const PluginRenderContext&) override;
 
+    //==============================================================================
+    // Channel configuration
+    //
+    // Main-bus overrides report only the main I/O bus for track routing.
+    // getChannelNames() reports ALL channels including sidechain.
+
     bool producesAudioWhenNoAudioInput() override   { return isAutomationNeeded() || isSynth() || ! noTail(); }
     int getNumOutputChannelsGivenInputs (int numInputs) override;
+    BusLayout getBusses() const override;
     void getChannelNames (juce::StringArray* ins, juce::StringArray* outs) override;
 
     bool isVST() const noexcept             { return desc.pluginFormatName == "VST"; }
@@ -100,13 +129,13 @@ public:
     const char* getDebugName() const noexcept   { return debugName.toUTF8(); }
 
     //==============================================================================
-    int getNumInputs() const;
-    int getNumOutputs() const;
+    // Bus layout
 
-    /** Attempts to change the layout of the plugin. */
+    /** Attempts to change the full bus layout of the wrapped plugin.
+        Temporarily stops playback to safely reconfigure. */
     bool setBusesLayout (juce::AudioProcessor::BusesLayout);
 
-    /** Attempts to change the layout of the plugin. */
+    /** Attempts to change a single bus layout. */
     bool setBusLayout (juce::AudioChannelSet, bool isInput, int busIndex);
 
     //==============================================================================
@@ -123,10 +152,38 @@ public:
     //==============================================================================
     const VSTXML* getVSTXML() const noexcept        { return vstXML.get(); }
 
+    //==============================================================================
+    // Plugin instance access
+
+    /** Returns the underlying juce::AudioPluginInstance, or nullptr if not yet loaded. */
     juce::AudioPluginInstance* getAudioPluginInstance() const;
 
+    /** If enabled, the wrapped juce::AudioPluginInstance is destroyed synchronously when
+        this plugin is deleted rather than via the shared asynchronous deleter. ARA-bound
+        instances need this: the ARA spec requires a bound plugin instance to be destroyed
+        before the document controller it is bound to. */
+    void setDeletesPluginInstanceSynchronously (bool shouldDeleteSynchronously) noexcept    { deleteInstanceSynchronously = shouldDeleteSynchronously; }
+
+   #if TRACKTION_ENABLE_ARA
+    /** Takes ownership of this plugin's ARA document binding
+        (see ARADocumentHolder::bindPluginToDocument). The binding is destroyed -
+        unregistering from the ARA document - just before the wrapped instance is
+        deleted, so it can never dangle or outlive the plugin. */
+    void setARADocumentBinding (std::unique_ptr<ARAPluginBinding>);
+
+    /** Returns true if this plugin owns an ARA document binding, i.e. it was bound via
+        ARADocumentHolder::bindPluginToDocument (the browser/panel case). The bind lasts
+        for the lifetime of the wrapped instance, so a plugin returned from the
+        PluginCache may already be bound.
+        NB: clip-player instances are ARA-bound too, but they're owned by their
+        ARAClipPlayer and never pass through the PluginCache, so they don't show here. */
+    bool isBoundToARADocument() const noexcept          { return araBinding != nullptr; }
+   #endif
+
+    /** The plugin's description (format, name, manufacturer, file path, etc.). */
     juce::PluginDescription desc;
 
+    /** Dry/wet mix values and their automatable parameters. */
     juce::CachedValue<float> dryValue, wetValue;
     AutomatableParameter::Ptr dryGain, wetGain;
 
@@ -134,6 +191,13 @@ public:
 
     //==============================================================================
     std::unique_ptr<EditorComponent> createEditor() override;
+
+    //==============================================================================
+    // Deprecated
+
+    /** @deprecated Use getAudioPluginInstance()->getTotalNumInputChannels() instead. */
+    [[deprecated ("Use getAudioPluginInstance()->getTotalNumInputChannels() instead")]]
+    int getTotalNumInputChannels() const;
 
 private:
     //==============================================================================
@@ -145,6 +209,11 @@ private:
     std::unique_ptr<LoadedInstance> loadedInstance;
     std::atomic<bool> hasLoadedInstance { false }, isInstancePrepared { false },
                       isAsyncInitialising { false }, isRestoringPluginState { false };
+    bool deleteInstanceSynchronously = false;
+
+   #if TRACKTION_ENABLE_ARA
+    std::unique_ptr<ARAPluginBinding> araBinding;
+   #endif
 
     std::unique_ptr<VSTXML> vstXML;
     int latencySamples = 0;
@@ -199,7 +268,7 @@ private:
 };
 
 //==============================================================================
-/** specialised AutomatableParameter for wet/dry.
+/** Specialised AutomatableParameter for wet/dry.
     Having a subclass just lets it label itself more nicely.
  */
 struct PluginWetDryAutomatableParam  : public AutomatableParameter
@@ -214,4 +283,4 @@ struct PluginWetDryAutomatableParam  : public AutomatableParameter
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PluginWetDryAutomatableParam)
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

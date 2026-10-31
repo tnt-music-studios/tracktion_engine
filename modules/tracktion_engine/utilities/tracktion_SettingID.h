@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 /** A list of settings the engine will get and set */
 enum class SettingID
@@ -18,6 +17,7 @@ enum class SettingID
     addAntiDenormalNoise,
     audio_device_setup,
     audiosettings,
+    audioDeviceLayoutPresets,
     autoFreeze,
     autoTempoMatch,
     autoTempoDetect,
@@ -125,6 +125,7 @@ enum class SettingID
     renderTrimSilence,
     renderSampRate,
     renderStereo,
+    renderChannelConfig,
     renderBits,
     renderDither,
     quality,
@@ -135,4 +136,4 @@ enum class SettingID
     addAcidMetadata,
 };
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 TrackOutput::TrackOutput (Track& t)
     : owner (t)
@@ -49,7 +48,7 @@ void TrackOutput::updateOutput()
 {
     // Also called after edit has created all the tracks - check our output isn't dangling
     for (auto t = getDestinationTrack(); t != nullptr; t = t->getOutput().getDestinationTrack())
-        t->setFrozen (false, Track::groupFreeze);
+        t->unfreeze (Track::groupFreeze);
 
     auto oldTrackID = destTrackID;
     destTrackID = {};
@@ -75,7 +74,7 @@ void TrackOutput::updateOutput()
 
     owner.edit.restartPlayback();
     owner.changed();
-    owner.setFrozen (false, Track::groupFreeze);
+    owner.unfreeze (Track::groupFreeze);
 }
 
 //==============================================================================
@@ -88,6 +87,11 @@ bool TrackOutput::outputsToDevice (const juce::String& deviceName, bool compareD
 
     if (outputDevice.get().equalsIgnoreCase (deviceName))
         return true;
+
+    // The output is stored as a device ID, so compare the name of the device it refers to
+    if (auto device = owner.edit.engine.getDeviceManager().findOutputDeviceForID (outputDevice))
+        if (device->getName().equalsIgnoreCase (deviceName))
+            return true;
 
     if (compareDefaultDevices)
     {
@@ -156,6 +160,11 @@ bool TrackOutput::usesDefaultMIDIOut() const
     return outputDevice == DeviceManager::getDefaultMidiOutDeviceName (false);
 }
 
+bool TrackOutput::outputsToNone() const
+{
+    return outputDevice == "(none)";
+}
+
 OutputDevice* TrackOutput::getOutputDevice (bool traceThroughDestTracks) const
 {
     auto& dm = owner.edit.engine.getDeviceManager();
@@ -205,7 +214,7 @@ juce::String TrackOutput::getDescriptiveOutputName() const
     }
 
     if (auto dev = getOutputDevice (false))
-        return dev->getAlias();
+        return dev->getAliasOrName();
 
     return outputDevice;
 }
@@ -251,6 +260,11 @@ void TrackOutput::setOutputToDefaultDevice (bool isMidi)
                           : DeviceManager::getDefaultAudioOutDeviceName (false);
 }
 
+void TrackOutput::setOutputToNone()
+{
+    outputDevice = "(none)";
+}
+
 void TrackOutput::getPossibleOutputDeviceNames (const juce::Array<AudioTrack*>& tracks,
                                                 juce::StringArray& s, juce::StringArray& a,
                                                 juce::BigInteger& hasAudio,
@@ -288,7 +302,7 @@ void TrackOutput::getPossibleOutputDeviceNames (const juce::Array<AudioTrack*>& 
                 }
 
                 s.add (out->getName());
-                a.add (out->getAlias());
+                a.add (out->getAliasOrName());
             }
         }
     }
@@ -335,4 +349,4 @@ void TrackOutput::valueTreePropertyChanged (juce::ValueTree& v, const juce::Iden
     }
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine

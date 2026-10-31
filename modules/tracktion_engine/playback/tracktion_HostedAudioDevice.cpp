@@ -8,8 +8,7 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
-{
+namespace tracktion::inline engine {
 
 //==============================================================================
 class HostedAudioDevice : public juce::AudioIODevice
@@ -156,13 +155,18 @@ class HostedMidiInputDevice : public MidiInputDevice
 {
 public:
     HostedMidiInputDevice (HostedAudioDeviceInterface& aif)
-        : MidiInputDevice (aif.engine, TRANS("MIDI Input"), TRANS("MIDI Input"), "MIDI Input")
+        : MidiInputDevice (aif.engine, TRANS("MIDI Input"), "MIDI Input")
     {
     }
 
     DeviceType getDeviceType() const override
     {
         return virtualMidiDevice;
+    }
+
+    juce::String getDeviceTypeDescription() const override
+    {
+        return TRANS("MIDI Input");
     }
 
     InputDeviceInstance* createInstance (EditPlaybackContext& epc) override
@@ -362,10 +366,10 @@ void HostedAudioDeviceInterface::initialise (const Parameters& p)
             inputLatencyProcessor->setLatencyNumSamples (parameters.inputLatencyNumSamples);
         }
 
-        // Set the stereo channels first and then dispatch this syncronously before
+        // Set devices to mono first and then dispatch synchronously before
         // changing the properties of the devices as they may have changed
         for (auto wi : dm.getWaveInputDevices())
-            wi->setStereoPair (false);
+            dm.setDeviceNumChannels (*wi, 1);
 
         dm.dispatchPendingUpdates();
 
@@ -479,4 +483,4 @@ std::shared_ptr<MidiInputDevice> HostedAudioDeviceInterface::createMidiInput()
     return midiInputs.back();
 }
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
