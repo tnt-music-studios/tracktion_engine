@@ -116,9 +116,6 @@ static void describeStandardDevices (std::vector<WaveDeviceDescription>& descrip
 
 bool WaveDeviceDescriptionList::initialiseFromCustomBehaviour (juce::AudioIODevice& device, EngineBehaviour& eb)
 {
-    inputs.clear();
-    outputs.clear();
-
     if (eb.isDescriptionOfWaveDevicesSupported())
     {
         eb.describeWaveDevices (inputs, device, true);
@@ -220,9 +217,6 @@ bool WaveDeviceDescriptionList::initialiseFromState (const juce::XmlElement& xml
 
             if (json.isObject())
             {
-                inputs.clear();
-                outputs.clear();
-
                 for (const auto& input : json["inputs"])
                     inputs.push_back (WaveDeviceDescription::fromJSON (input));
 
@@ -263,6 +257,8 @@ void WaveDeviceDescriptionList::initialise (Engine& engine, juce::AudioIODevice&
     deviceInputChannelNames = device.getInputChannelNames();
     deviceOutputChannelNames = device.getOutputChannelNames();
     wasInitialisedFromCustomBehaviour = false;
+    inputs.clear();
+    outputs.clear();
 
     if (initialiseFromCustomBehaviour (device, engine.getEngineBehaviour()))
     {
@@ -305,16 +301,7 @@ bool WaveDeviceDescriptionList::updateForDevice (juce::AudioIODevice& device)
          || outputChannelNames != deviceOutputChannelNames)
         return false;
 
-    if (wasInitialisedFromCustomBehaviour)
-    {
-        refreshNamesInList (inputs,  deviceInputChannelNames,  true);
-        refreshNamesInList (outputs, deviceOutputChannelNames, false);
-    }
-    else
-    {
-        sanityCheckList();
-    }
-
+    sanityCheckList();
     return true;
 }
 
