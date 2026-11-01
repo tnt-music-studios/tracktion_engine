@@ -52,14 +52,10 @@ public:
         if (plugin.edit.isLoading())
             return;
 
-        if (plugin.isRestoringPluginState.load (std::memory_order_acquire))
-        {
-            processorChanged = true;
-            return;
-        }
-
         processorChanged = true;
-        triggerAsyncUpdate();
+
+        if (! plugin.isRestoringPluginState.load (std::memory_order_acquire))
+            triggerAsyncUpdate();
     }
 
 private:
@@ -76,7 +72,7 @@ private:
         return false;
     }
 
-    void updateFromPlugin (bool restartOnLatencyChange, bool clearDevicesOnLatencyChange)
+    void updateFromPlugin()
     {
         TRACKTION_ASSERT_MESSAGE_THREAD
         bool wasLatencyChange = false;
@@ -93,11 +89,9 @@ private:
                     plugin.latencySeconds = plugin.latencySamples / plugin.sampleRate;
                 }
 
-                if (restartOnLatencyChange)
-                    plugin.edit.restartPlayback(); // Restart playback to rebuild audio graph for the new latency to take effect
+                plugin.edit.restartPlayback(); // Restart playback to rebuild audio graph for the new latency to take effect
 
-                if (clearDevicesOnLatencyChange)
-                    plugin.edit.getTransport().triggerClearDevicesOnStop(); // This will fully re-initialise plugins
+                plugin.edit.getTransport().triggerClearDevicesOnStop(); // This will fully re-initialise plugins
             }
 
             pi->refreshParameterList();
@@ -134,7 +128,7 @@ public:
         cancelPendingUpdate();
         paramChanged = false;
         processorChanged = false;
-        updateFromPlugin (false, false);
+        updateFromPlugin();
     }
 
 private:
@@ -149,7 +143,7 @@ private:
         if (processorChanged)
         {
             processorChanged = false;
-            updateFromPlugin (true, true);
+            updateFromPlugin();
         }
     }
 
