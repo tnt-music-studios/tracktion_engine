@@ -1607,6 +1607,12 @@ void DeviceManager::addContext (EditPlaybackContext* c)
         activeContexts.addIfNotAlreadyThere (c);
     }
 
+    // A suspended callback returns before it advances streamTime, and only prepareToStart() resumes
+    // it, on this thread, so waiting here could only ever time out. prepareToStart() resyncs every
+    // active context, this one included.
+    if (isSuspended)
+        return;
+
     for (int i = 200; --i >= 0;)
     {
         juce::Thread::sleep (1);
