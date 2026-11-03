@@ -52,7 +52,9 @@ private:
         uint32_t lastUpdateMs = 0;
     };
 
-    std::atomic<State> state;
+    // audio-write, message-read
+    static_assert (std::is_trivially_copyable_v<State>);
+    crill::seqlock_object<State> state;
 };
 
 //==============================================================================
