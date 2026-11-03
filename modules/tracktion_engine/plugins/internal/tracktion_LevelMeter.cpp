@@ -82,7 +82,7 @@ void LevelMeterPlugin::timerCallback()
 
         if (ecm.isAttachedToEdit (edit))
         {
-            // Grow on demand so we can support any channel count (e.g. ambisonic
+            // Grow on demand up to the client's channel limit (e.g. ambisonic
             // tracks). This runs on the message thread at 50 Hz, so the resize is
             // not a realtime concern; in steady state the capacity is preserved.
             const auto numChans = controllerLevelClient.getNumChannelsUsed();

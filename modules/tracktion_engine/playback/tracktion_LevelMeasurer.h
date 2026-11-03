@@ -52,16 +52,14 @@ public:
 
     int getNumActiveChannels() const noexcept           { return numActiveChannels; }
 
-    //==============================================================================
-    /** Per-channel measurement result, used to batch updates in a single lock. */
-    struct ChannelLevel
-    {
-        DbTimePair level;
-        bool overloaded = false;
-    };
-
+    /** Receives levels from the audio thread and hands them to any other thread, without a lock
+        and without allocating. A fixed number of channels makes that possible: 64 covers
+        seventh-order ambisonics, and channels past it are not metered.
+    */
     struct Client
     {
+        static constexpr int maxChannels = 64;
+
         Client() = default;
 
         int getNumChannelsUsed() const noexcept;
@@ -73,27 +71,23 @@ public:
 
         /** @internal */
         void setNumChannelsUsed (int) noexcept;
-        void setOverload (int channel, bool hasOverloaded) noexcept;
         void setClearOverload (bool) noexcept;
         void setClearPeak (bool) noexcept;
 
         void updateAudioLevel (int channel, DbTimePair) noexcept;
         void updateMidiLevel (DbTimePair) noexcept;
 
-        /** Updates all channel levels and numChannelsUsed under a single lock. */
-        void updateAllChannels (const ChannelLevel* levels, int numChannels) noexcept;
+        /** Updates the first numChannels levels and numChannelsUsed. */
+        void updateAllChannels (const DbTimePair* levels, int numChannels) noexcept;
 
     private:
-        void ensureNumChannels (int needed);
+        static_assert (std::atomic<DbTimePair>::is_always_lock_free);
 
-        std::vector<DbTimePair> audioLevels;
-        std::vector<bool> overload;
-        DbTimePair midiLevels;
+        std::array<std::atomic<DbTimePair>, (size_t) maxChannels> audioLevels;
+        std::atomic<DbTimePair> midiLevels;
         std::atomic<int> numChannelsUsed { 0 };
-        bool clearOverload = true;
-        bool clearPeak = true;
-
-        juce::SpinLock mutex;
+        std::atomic<bool> clearOverload { true };
+        std::atomic<bool> clearPeak { true };
     };
 
     //==============================================================================
@@ -108,7 +102,7 @@ private:
     juce::Array<Client*> clients;
     RealTimeSpinLock clientsMutex;
 
-    choc::SmallVector<ChannelLevel, 32> channelLevels;
+    std::array<DbTimePair, (size_t) Client::maxChannels> channelLevels;
 
     JUCE_DECLARE_WEAK_REFERENCEABLE(LevelMeasurer)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LevelMeasurer)
