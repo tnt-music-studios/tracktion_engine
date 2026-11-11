@@ -1347,6 +1347,17 @@ void DeviceManager::audioDeviceIOCallbackWithContext (const float* const* inputC
                                                       const juce::AudioIODeviceCallbackContext&)
 {
     CRASH_TRACER
+    // Taken first, so nothing this callback does sits between the device handing over its
+    // buffer and the stamp. The buffer the callback fills starts to sound the reported output
+    // latency later; each chunk starts its own offset into it.
+    const auto callbackStart = std::chrono::steady_clock::now();
+    const auto heardAt = [&] (int sampleOffset)
+    {
+        return callbackStart
+                + std::chrono::duration_cast<std::chrono::steady_clock::duration> (
+                      std::chrono::duration<double> (sampleOffset / currentSampleRate + outputLatencyTime));
+    };
+
     juce::FloatVectorOperations::disableDenormalisedNumberSupport();
 
    #if JUCE_ANDROID
@@ -1368,7 +1379,7 @@ void DeviceManager::audioDeviceIOCallbackWithContext (const float* const* inputC
     {
         audioDeviceIOCallbackInternal (inputChannelData, numInputChannels,
                                        outputChannelData, totalNumOutputChannels,
-                                       numSamples);
+                                       numSamples, heardAt (0));
         return;
     }
 
@@ -1384,7 +1395,7 @@ void DeviceManager::audioDeviceIOCallbackWithContext (const float* const* inputC
 
         audioDeviceIOCallbackInternal (inputChannelsScratch, numInputChannels,
                                        outputChannelsScratch, totalNumOutputChannels,
-                                       numThisTime);
+                                       numThisTime, heardAt (sampleStartIndex));
 
         numSamples -= numThisTime;
         sampleStartIndex += numThisTime;
@@ -1396,7 +1407,7 @@ void DeviceManager::audioDeviceIOCallbackWithContext (const float* const* inputC
 
 void DeviceManager::audioDeviceIOCallbackInternal (const float* const* inputChannelData, int numInputChannels,
                                                    float* const* outputChannelData, int totalNumOutputChannels,
-                                                   int numSamples)
+                                                   int numSamples, std::chrono::steady_clock::time_point heardAtBlockStart)
 {
     {
         engine.getAudioFileManager().cache.nextBlockStarted();
@@ -1438,7 +1449,7 @@ void DeviceManager::audioDeviceIOCallbackInternal (const float* const* inputChan
                 blockStreamTime = { streamTime, streamTime + blockLength };
 
                 for (auto c : activeContexts)
-                    c->fillNextNodeBlock (outputChannelData, totalNumOutputChannels, numSamples);
+                    c->fillNextNodeBlock (outputChannelData, totalNumOutputChannels, numSamples, heardAtBlockStart);
 
                 for (auto chan : activeOutputChannels)
                     if (chan >= 0 && chan < totalNumOutputChannels)

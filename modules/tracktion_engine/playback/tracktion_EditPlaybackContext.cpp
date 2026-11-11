@@ -512,6 +512,12 @@ EditPlaybackContext::EditPlaybackContext (TransportControl& tc)
         TRACKTION_LOG_ERROR("EditPlaybackContext created whilst rendering");
     }
 
+    // Seeded here and only here: until the graph renders its first piece, a fresh context
+    // stands where the transport stands. createNode() runs on every rebuild during playback,
+    // so seeding there would jump the record back.
+    const auto now = std::chrono::steady_clock::now();
+    audibleTime.store ({ transport.getPosition(), now, {}, now, false, 0 });
+
     if (edit.shouldPlay())
     {
         nodePlaybackContext = std::make_unique<NodePlaybackContext> (*this,
@@ -699,7 +705,7 @@ void EditPlaybackContext::createNode()
     // still be processing them if that would re-run their initialise()
     nodePlaybackContext->clearNodeIfFormatChanged (cnp.sampleRate, cnp.blockSize);
 
-    auto editNode = createNodeForEdit (*this, audiblePlaybackTime, cnp);
+    auto editNode = createNodeForEdit (*this, audiblePlaybackTime, audibleTime, cnp);
 
     nodePlaybackContext->setNode (std::move (editNode), cnp.sampleRate, cnp.blockSize);
     updateNumCPUs();
@@ -970,9 +976,16 @@ void EditPlaybackContext::nextBlockStarted()
     nodePlaybackContext->nextBlockStarted();
 }
 
-void EditPlaybackContext::fillNextNodeBlock (float* const* allChannels, int numChannels, int numSamples)
+void EditPlaybackContext::fillNextNodeBlock (float* const* allChannels, int numChannels, int numSamples,
+                                             std::chrono::steady_clock::time_point heardAtBlockStart)
 {
     nodePlaybackContext->updateReferenceSampleRange (numSamples);
+
+    // The root node stamps each piece of this block from these two: a piece starting N reference
+    // samples into the block is heard N samples after the block's first sample.
+    auto& processState = nodePlaybackContext->processState;
+    processState.blockReferenceStart = nodePlaybackContext->playHead.getReferenceSampleRange().getStart();
+    processState.heardAtBlockStart = heardAtBlockStart;
 
     // Sync this playback context with a master context
     if (nodeContextToSyncTo && nodePlaybackContext->playHead.isPlaying() && nodeContextToSyncTo->getNodePlayHead() != nullptr)
@@ -1130,6 +1143,11 @@ TimePosition EditPlaybackContext::getAudibleTimelineTime()
 {
     return nodePlaybackContext ? TimePosition::fromSeconds (audiblePlaybackTime.load())
                                : transport.getPosition();
+}
+
+EditPlaybackContext::AudibleTime EditPlaybackContext::getAudibleTime() const
+{
+    return audibleTime.load();
 }
 
 double EditPlaybackContext::getSampleRate() const

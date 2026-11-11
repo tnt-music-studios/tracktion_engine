@@ -102,6 +102,41 @@ public:
     /** Returns the overall latency of the currently prepared graph. */
     int getLatencySamples() const;
     TimePosition getAudibleTimelineTime();
+
+    /** The audible time of the most recently rendered piece of a block, paired with the
+        steady-clock instant its first sample is heard.
+
+        The playback graph's root node writes one of these per piece it renders (a block is
+        split at loop wraps and tempo changes), on the audio thread. Until the first piece, it
+        holds the transport position the context was created at, not advancing.
+    */
+    struct AudibleTime
+    {
+        /** Audible timeline position of the piece's first output sample. */
+        TimePosition time;
+
+        /** When that sample is heard: the device callback's entry, plus the piece's offset into
+            the callback, plus the device's reported output latency. */
+        std::chrono::steady_clock::time_point heardAt;
+
+        /** The piece's length. */
+        std::chrono::steady_clock::duration extent {};
+
+        /** heardAt of the first advancing piece of the current run. */
+        std::chrono::steady_clock::time_point runHeardFrom;
+
+        /** True when the playhead advanced through this piece; false while stopped and while
+            the audible time holds during the latency countdown after a jump. */
+        bool advancing = false;
+
+        /** Count of pieces whose audible time did not continue their predecessor's: seeks,
+            loop wraps, tempo remaps, stops and device restarts. */
+        uint32_t discontinuities = 0;
+    };
+
+    /** Returns the most recently published AudibleTime. Retries only across an in-flight
+        audio-thread write; never blocks on a lock and never allocates. */
+    AudibleTime getAudibleTime() const;
     double getSampleRate() const;
     void updateNumCPUs();
 
@@ -219,11 +254,13 @@ private:
 
     juce::WeakReference<EditPlaybackContext> nodeContextToSyncTo;
     std::atomic<double> audiblePlaybackTime { 0.0 };
+    crill::seqlock_object<AudibleTime> audibleTime;  // audio-write (the root node), any-read
     std::atomic<int> activelyRecordingInputDevices { 0 };
 
     void createNode();
     void nextBlockStarted();
-    void fillNextNodeBlock (float* const* allChannels, int numChannels, int numSamples);
+    void fillNextNodeBlock (float* const* allChannels, int numChannels, int numSamples,
+                            std::chrono::steady_clock::time_point heardAtBlockStart);
 
     JUCE_DECLARE_WEAK_REFERENCEABLE (EditPlaybackContext)
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EditPlaybackContext)

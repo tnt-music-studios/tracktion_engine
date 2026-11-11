@@ -343,7 +343,7 @@ private:
 
     void audioDeviceIOCallbackInternal (const float* const* inputChannelData, int numInputChannels,
                                         float* const* outputChannelData, int totalNumOutputChannels,
-                                        int numSamples);
+                                        int numSamples, std::chrono::steady_clock::time_point heardAtBlockStart);
 
     // Deprecated: these legacy methods have been removed as we move to a more flexible
     // channel layout system. Use methods in the wave devices instead.

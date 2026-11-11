@@ -83,6 +83,11 @@ struct ProcessState
     TimeRange editTimeRange;
     BeatRange editBeatRange;
 
+    /** The reference sample the whole device block starts at, and the steady-clock instant that
+        sample is heard. Set once per block, before the graph processes any piece of it. */
+    int64_t blockReferenceStart = 0;
+    std::chrono::steady_clock::time_point heardAtBlockStart;
+
 private:
     const tempo::Sequence* tempoSequence = nullptr;
     std::unique_ptr<tempo::Sequence::Position> tempoPosition;

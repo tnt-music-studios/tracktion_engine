@@ -1093,19 +1093,7 @@ void TransportControl::timerCallback()
         // position will jump and be stuck at the loop in position.
         // The other way to fix this mught be to change the play head to only snap the position on play start..
         if (! looping || isPlaying())
-        {
-            const auto currentTime = playHeadWrapper->getLiveTransportPosition();
-            const auto sampleRate = playHeadWrapper->getSampleRate();
-
-            // The playhead quantises positions to whole samples, so if it's still at the
-            // transport position, keep the precisely-set position rather than replacing
-            // it with the quantised readback (which would show e.g. 8|4|959 instead of 9|1|000)
-            if (toSamples (currentTime, sampleRate) != toSamples (position.get(), sampleRate))
-            {
-                transportState->setVideoPosition (currentTime, false);
-                transportState->updatePositionFromPlayhead (currentTime);
-            }
-        }
+            syncPositionFromPlayhead();
     }
 
     // Periodically update the loop times from the transport state
@@ -1652,6 +1640,21 @@ std::optional<SyncPoint> TransportControl::performStopRecording()
     return std::nullopt;
 }
 
+void TransportControl::syncPositionFromPlayhead()
+{
+    const auto currentTime = playHeadWrapper->getLiveTransportPosition();
+    const auto sampleRate = playHeadWrapper->getSampleRate();
+
+    // The playhead quantises positions to whole samples, so if it's still at the
+    // transport position, keep the precisely-set position rather than replacing
+    // it with the quantised readback (which would show e.g. 8|4|959 instead of 9|1|000)
+    if (toSamples (currentTime, sampleRate) != toSamples (position.get(), sampleRate))
+    {
+        transportState->setVideoPosition (currentTime, false);
+        transportState->updatePositionFromPlayhead (currentTime);
+    }
+}
+
 void TransportControl::performStop()
 {
     CRASH_TRACER
@@ -1700,6 +1703,10 @@ void TransportControl::performStop()
 
         clearPlayingFlags();
         playHeadWrapper->stop();
+
+        // The timer refreshes the position from the playhead only while a context exists, and
+        // the context may be released just below, so the stop position is taken now.
+        syncPositionFromPlayhead();
     }
 
     if (transportState->clearDevices || ! edit.playInStopEnabled || transportState->clearDevicesOnStop)

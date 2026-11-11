@@ -58,7 +58,9 @@ struct EditNodeBuilder
 
 //==============================================================================
 /** Creates a Node to play back an Edit with live inputs and outputs. */
-std::unique_ptr<tracktion::graph::Node> createNodeForEdit (EditPlaybackContext&, std::atomic<double>& audibleTimeToUpdate, const CreateNodeParams&);
+std::unique_ptr<tracktion::graph::Node> createNodeForEdit (EditPlaybackContext&, std::atomic<double>& audibleTimeToUpdate,
+                                                          crill::seqlock_object<EditPlaybackContext::AudibleTime>& audibleTimeRecordToUpdate,
+                                                          const CreateNodeParams&);
 
 /** Creates a Node to render an Edit. */
 std::unique_ptr<tracktion::graph::Node> createNodeForEdit (Edit&, const CreateNodeParams&);

@@ -1989,7 +1989,9 @@ std::unique_ptr<tracktion::graph::Node> createMasterFadeInOutNode (Edit& edit,
 }
 
 //==============================================================================
-std::unique_ptr<tracktion::graph::Node> createNodeForEdit (EditPlaybackContext& epc, std::atomic<double>& audibleTimeToUpdate, const CreateNodeParams& params)
+std::unique_ptr<tracktion::graph::Node> createNodeForEdit (EditPlaybackContext& epc, std::atomic<double>& audibleTimeToUpdate,
+                                                          crill::seqlock_object<EditPlaybackContext::AudibleTime>& audibleTimeRecordToUpdate,
+                                                          const CreateNodeParams& params)
 {
     Edit& edit = epc.edit;
     auto& playHeadState = params.processState.playHeadState;
@@ -2188,7 +2190,7 @@ std::unique_ptr<tracktion::graph::Node> createNodeForEdit (EditPlaybackContext& 
 
     std::unique_ptr<Node> finalNode (std::move (outputNode));
     finalNode = createRackNode (std::move (finalNode), edit.getRackList(), params);
-    finalNode = makeNode<PlayHeadPositionNode> (params.processState, std::move (finalNode), audibleTimeToUpdate);
+    finalNode = makeNode<PlayHeadPositionNode> (params.processState, std::move (finalNode), audibleTimeToUpdate, audibleTimeRecordToUpdate);
 
     return finalNode;
 }

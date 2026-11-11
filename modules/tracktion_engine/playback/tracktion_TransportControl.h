@@ -443,6 +443,11 @@ private:
     void performPlay();
     std::optional<std::pair<SyncPoint, std::optional<TimeRange>>> performRecord();
     void performStop();
+
+    // Copies the live position (the audible time while a graph runs, else the playhead's) into the
+    // position property, unless the property already holds it to the sample.
+    void syncPositionFromPlayhead();
+
     std::optional<SyncPoint> performStopRecording();
 
     void performPositionChange();

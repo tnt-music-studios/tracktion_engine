@@ -18,10 +18,12 @@ class PlayHeadPositionNode final    : public tracktion::graph::Node,
 {
 public:
     PlayHeadPositionNode (ProcessState& processStateToUse, std::unique_ptr<tracktion::graph::Node> inputNode,
-                          std::atomic<double>& playHeadTimeToUpdate)
+                          std::atomic<double>& playHeadTimeToUpdate,
+                          crill::seqlock_object<EditPlaybackContext::AudibleTime>& audibleTimeToUpdate)
         : TracktionEngineNode (processStateToUse),
           input (std::move (inputNode)),
-          playHeadTime (playHeadTimeToUpdate)
+          playHeadTime (playHeadTimeToUpdate),
+          audibleTime (audibleTimeToUpdate)
     {
         setOptimisations ({ ClearBuffers::no,
                             AllocateAudioBuffer::no });
@@ -65,6 +67,7 @@ public:
 private:
     std::unique_ptr<tracktion::graph::Node> input;
     std::atomic<double>& playHeadTime;
+    crill::seqlock_object<EditPlaybackContext::AudibleTime>& audibleTime;
 
     int latencyNumSamples = 0;
     bool updateReferencePositionOnJump = true;
@@ -79,7 +82,8 @@ private:
 
     void updatePlayHeadTime (int64_t numSamples)
     {
-        int64_t referenceSamplePosition = getReferenceSampleRange().getStart();
+        const int64_t pieceReferenceStart = getReferenceSampleRange().getStart();
+        int64_t referenceSamplePosition = pieceReferenceStart;
 
         if (getPlayHeadState().didPlayheadJump() || updateReferencePositionOnJump)
         {
@@ -93,7 +97,11 @@ private:
             state->numLatencySamplesToCountDown -= numSamplesToDecrement;
         }
 
-        if (getPlayHead().isPlaying() && state->numLatencySamplesToCountDown <= 0)
+        // Read once: the message thread can stop the playhead mid-call, and the published
+        // record's flag has to agree with the hold chosen here.
+        const bool advancing = getPlayHead().isPlaying() && state->numLatencySamplesToCountDown <= 0;
+
+        if (advancing)
         {
             referenceSamplePosition -= latencyNumSamples;
         }
@@ -106,7 +114,42 @@ private:
         const double time = tracktion::graph::sampleToTime (timelinePosition, getSampleRate());
 
         playHeadTime = time;
+        publishAudibleTime (time, timelinePosition, pieceReferenceStart, numSamples, advancing);
         updateReferencePositionOnJump = false;
+    }
+
+    // Publishes this piece's audible time with the instant its first sample is heard. The last
+    // published record is the predecessor -- the context's seed before the first piece -- so a
+    // rebuilt node judges its first piece against it too. A piece continues the record when it
+    // starts where that one ended, or where it held; anything else (a seek, a loop wrap, a tempo
+    // remap, a stop's replay, a device restart, a latency pin after a rebuild) is counted, so a
+    // reader that skips pieces still sees that the timeline jumped.
+    void publishAudibleTime (double time, int64_t timelinePosition, int64_t pieceReferenceStart,
+                             int64_t numSamples, bool advancing)
+    {
+        const auto& processState = getProcessState();
+        const double sampleRate = getSampleRate();
+        const auto toSteadyDuration = [sampleRate] (int64_t samples)
+        {
+            return std::chrono::duration_cast<std::chrono::steady_clock::duration> (
+                std::chrono::duration<double> (double (samples) / sampleRate));
+        };
+
+        const auto heardAt = processState.heardAtBlockStart
+                              + toSteadyDuration (pieceReferenceStart - processState.blockReferenceStart);
+
+        // This node is the record's only writer, so the load reads its own last store and never retries.
+        const auto previous = audibleTime.load();
+        // Both values were whole samples when stored, so the round trip is exact.
+        const int64_t previousEnd = toSamples (previous.time, sampleRate)
+                                     + (previous.advancing ? toSamples (TimeDuration (previous.extent), sampleRate) : 0);
+        const bool discontinuous = timelinePosition != previousEnd;
+
+        const auto runHeardFrom = (advancing && (! previous.advancing || discontinuous)) ? heardAt
+                                                                                          : previous.runHeardFrom;
+
+        audibleTime.store ({ TimePosition::fromSeconds (time), heardAt, toSteadyDuration (numSamples), runHeardFrom,
+                             advancing, previous.discontinuities + (discontinuous ? 1u : 0u) });
     }
 
     void updateFromPreviousNode (NodeGraph* nodeGraphToReplace)
