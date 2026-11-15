@@ -234,6 +234,12 @@ public:
     virtual bool arePluginsRemappedWhenTempoChanges()                               { return true; }
     virtual void setPluginsRemappedWhenTempoChanges (bool)                          {}
 
+    /// If this returns false, the play head keeps its time when the tempo sequence changes
+    /// instead of moving to keep its beat.
+    ///
+    /// You shouldn't dynamically change this function's return value.
+    virtual bool isPlayheadRemappedWhenTempoChanges()                               { return true; }
+
     /// If this returns true, it means that the length (in seconds) of one "beat" at
     /// any point in an edit is considered to be the length of one division in the current
     /// bar's time signature.

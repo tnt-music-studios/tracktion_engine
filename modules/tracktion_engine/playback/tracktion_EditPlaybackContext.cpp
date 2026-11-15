@@ -292,6 +292,9 @@ struct EditPlaybackContext::NodePlaybackContext
 
     void checkForTempoSequenceChanges()
     {
+        if (! remapPlayheadOnTempoChange)
+            return;
+
         const auto& internalSequence = tempoSequence.getInternalSequence();
 
         if (internalSequence.hash() == tempoState.hash)
@@ -443,6 +446,7 @@ struct EditPlaybackContext::NodePlaybackContext
 
     EditPlaybackContext& editPlaybackContext;
     const TempoSequence& tempoSequence { editPlaybackContext.edit.tempoSequence };
+    const bool remapPlayheadOnTempoChange { tempoSequence.edit.engine.getEngineBehaviour().isPlayheadRemappedWhenTempoChanges() };
     tracktion::graph::PlayHead playHead;
     tracktion::graph::PlayHeadState playHeadState { playHead };
     ProcessState processState { playHeadState, tempoSequence };
