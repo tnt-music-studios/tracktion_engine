@@ -543,6 +543,16 @@ tempo::BarsAndBeats TempoSequence::toBarsAndBeats (TimePosition t) const
 }
 
 //==============================================================================
+void TempoSequence::setStartTime (TimePosition newStartTime)
+{
+    state.setProperty (IDs::startTime, newStartTime.inSeconds(), getUndoManager());
+}
+
+TimePosition TempoSequence::getStartTime() const
+{
+    return TimePosition::fromSeconds (static_cast<double> (state.getProperty (IDs::startTime, 0.0)));
+}
+
 const tempo::Sequence& TempoSequence::getInternalSequence() const
 {
     return internalSequence;
@@ -573,7 +583,8 @@ void TempoSequence::updateTempoData()
     const bool useDenominator = edit.engine.getEngineBehaviour().lengthOfOneBeatDependsOnTimeSignature();
     tempo::Sequence newSeq (std::move (tempoChanges), std::move (timeSigChanges), std::move (keyChanges),
                             useDenominator ? tempo::LengthOfOneBeat::dependsOnTimeSignature
-                                           : tempo::LengthOfOneBeat::isAlwaysACrotchet);
+                                           : tempo::LengthOfOneBeat::isAlwaysACrotchet,
+                            getStartTime());
 
     // Update startTime properties of the model objects
     {

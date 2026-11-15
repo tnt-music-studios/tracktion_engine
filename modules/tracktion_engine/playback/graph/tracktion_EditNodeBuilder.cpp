@@ -336,7 +336,8 @@ namespace
             const bool useDenominator = clip.edit.engine.getEngineBehaviour().lengthOfOneBeatDependsOnTimeSignature();
             tempo::Sequence seq (std::move (tempoChanges), std::move (timeSigChanges), std::move (keyChanges),
                                     useDenominator ? tempo::LengthOfOneBeat::dependsOnTimeSignature
-                                                   : tempo::LengthOfOneBeat::isAlwaysACrotchet);
+                                                   : tempo::LengthOfOneBeat::isAlwaysACrotchet,
+                                    clip.edit.tempoSequence.getStartTime());
 
             return seq;
         }

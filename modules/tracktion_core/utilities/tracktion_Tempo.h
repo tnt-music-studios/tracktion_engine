@@ -125,9 +125,11 @@ namespace tempo
 
         /** Creates a Sequence for at least one TempoChange and at least one TimeSigChange
             and an optional number of KeyChange[s].
+            @param startTime The time at which beat 0 stands. Times before it continue the
+                             first section backwards, as negative beats.
         */
         Sequence (std::vector<TempoChange>, std::vector<TimeSigChange>, std::vector<KeyChange>,
-                  LengthOfOneBeat);
+                  LengthOfOneBeat, TimePosition startTime = {});
 
         /** Copies another Sequence. */
         Sequence (const Sequence&);
@@ -483,7 +485,7 @@ inline Sequence::Sequence (std::vector<TempoChange> tempos, std::vector<TimeSigC
 }
 
 inline Sequence::Sequence (std::vector<TempoChange> tempos, std::vector<TimeSigChange> timeSigs, std::vector<KeyChange> keys,
-                           LengthOfOneBeat lengthOfOneBeat)
+                           LengthOfOneBeat lengthOfOneBeat, TimePosition startTime)
 {
     if (keys.empty())
         keys.push_back ({});
@@ -492,6 +494,8 @@ inline Sequence::Sequence (std::vector<TempoChange> tempos, std::vector<TimeSigC
     assert (tempos[0].startBeat == BeatPosition());
     assert (timeSigs[0].startBeat == BeatPosition());
     assert (keys[0].startBeat == BeatPosition());
+
+    hash_combine (hashCode, startTime.inSeconds());
 
     // Find the beats with changes
     std::vector<BeatPosition> beatsWithChanges;
@@ -530,7 +534,7 @@ inline Sequence::Sequence (std::vector<TempoChange> tempos, std::vector<TimeSigC
                             beatsWithChanges.end());
 
     // Build the sections
-    TimePosition time;
+    TimePosition time = startTime;
     BeatPosition beatNum;
     double ppq          = 0.0;
     size_t timeSigIdx   = 0;
@@ -595,7 +599,7 @@ inline Sequence::Sequence (std::vector<TempoChange> tempos, std::vector<TimeSigC
             {
                 it.barNumberOfFirstBar = 0;
                 it.beatsUntilFirstBar = {};
-                it.timeOfFirstBar = {};
+                it.timeOfFirstBar = time;
             }
             else
             {

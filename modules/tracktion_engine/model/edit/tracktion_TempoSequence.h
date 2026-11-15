@@ -186,6 +186,15 @@ public:
     tempo::BarsAndBeats toBarsAndBeats (TimePosition) const;
 
     //==============================================================================
+    /** Sets the time at which beat 0 stands. Times before it continue the first tempo
+        backwards, as negative beats. Defaults to 0.
+    */
+    void setStartTime (TimePosition);
+
+    /** Returns the time at which beat 0 stands. */
+    TimePosition getStartTime() const;
+
+    //==============================================================================
     /** N.B. It is only safe to call this from the message thread or during audio callbacks.
         Access at any other time could incur data races.
     */
