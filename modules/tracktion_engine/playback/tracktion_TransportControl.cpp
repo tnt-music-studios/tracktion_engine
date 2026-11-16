@@ -1741,7 +1741,9 @@ void TransportControl::performPositionChange()
     }
     else
     {
-        const auto minStartTime = edit.tempoSequence.toTime (-BeatPosition::fromBeats (edit.getNumCountInBeats())) - 0.5s;
+        // Count-in pre-roll reaches back from beat 0. A sequence with a start time stands beat 0 after
+        // the edit's zero, which stays reachable.
+        const auto minStartTime = std::min (0_tp, edit.tempoSequence.toTime (-BeatPosition::fromBeats (edit.getNumCountInBeats())) - 0.5s);
         newPos = juce::jlimit (minStartTime, Edit::getMaximumEditEnd(), newPos);
     }
 
