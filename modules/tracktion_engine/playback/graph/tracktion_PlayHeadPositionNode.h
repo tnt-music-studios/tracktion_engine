@@ -155,8 +155,9 @@ private:
                                                                                           : previous.runHeardFrom;
 
         const auto& playHead = getPlayHead();
-        const std::optional<TimeRange> loop = (playHead.isLooping() && ! playHead.isRollingIntoLoop())
-                                                  ? std::optional<TimeRange> (timeRangeFromSamples (playHead.getLoopRange(), sampleRate))
+        const auto loopRange = playHead.getLoopRange();
+        const std::optional<TimeRange> loop = (playHead.isLooping() && ! playHead.isRollingIntoLoop() && ! loopRange.isEmpty())
+                                                  ? std::optional<TimeRange> (timeRangeFromSamples (loopRange, sampleRate))
                                                   : std::nullopt;
 
         audibleTime.store ({ TimePosition::fromSeconds (time), heardAt, toSteadyDuration (numSamples), runHeardFrom,

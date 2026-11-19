@@ -139,7 +139,8 @@ public:
         TimePosition linearTime;
 
         /** The loop the piece was rendered under, or nullopt when the play head was not looping
-            (rolling in to a loop counts as not looping: nothing wraps yet). */
+            (rolling in to a loop counts as not looping: nothing wraps yet). Never empty: an empty
+            range is no loop. */
         std::optional<TimeRange> loop;
     };
 
