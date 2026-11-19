@@ -336,6 +336,11 @@ inline juce::Range<int64_t> PlayHead::referenceSampleRangeToSourceRangeUnlooped 
 
 inline int64_t PlayHead::linearPositionToLoopPosition (int64_t position, juce::Range<int64_t> loopRange)
 {
+    // The looping flag and the range are separate atomics, so a reader can pair a raised flag
+    // with the empty range a release stores: an empty range is no loop, never a zero-length wrap.
+    if (loopRange.isEmpty())
+        return position;
+
     const auto loopStart = loopRange.getStart();
     return loopStart + juce::negativeAwareModulo ((position - loopStart), loopRange.getLength());
 }
