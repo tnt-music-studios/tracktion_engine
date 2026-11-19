@@ -267,6 +267,12 @@ private:
             {
                 transport.stopIfRecording();
 
+                // The playhead learns the flag now, not at the next poll: until it does it holds
+                // every position written to it inside a loop the transport no longer has, and
+                // plays on past one it has just been given.
+                transport.looping.forceUpdateOfCachedValue();
+                transport.pushLoopToPlayHead();
+
                 auto& ecm = transport.engine.getExternalControllerManager();
 
                 if (ecm.isAttachedToEdit (transport.edit))
@@ -1100,17 +1106,7 @@ void TransportControl::timerCallback()
     if (--loopUpdateCounter == 0)
     {
         loopUpdateCounter = 10;
-
-        if (looping)
-        {
-            auto lr = getLoopRange();
-            lr = lr.withEnd (std::max (lr.getEnd(), lr.getStart() + 0.001s));
-            playHeadWrapper->setLoopTimes (true, lr);
-        }
-        else
-        {
-            playHeadWrapper->setLoopTimes (false, {});
-        }
+        pushLoopToPlayHead();
     }
 }
 
@@ -1652,6 +1648,20 @@ void TransportControl::syncPositionFromPlayhead()
     {
         transportState->setVideoPosition (currentTime, false);
         transportState->updatePositionFromPlayhead (currentTime);
+    }
+}
+
+void TransportControl::pushLoopToPlayHead()
+{
+    if (looping)
+    {
+        auto lr = getLoopRange();
+        lr = lr.withEnd (std::max (lr.getEnd(), lr.getStart() + 0.001s));
+        playHeadWrapper->setLoopTimes (true, lr);
+    }
+    else
+    {
+        playHeadWrapper->setLoopTimes (false, {});
     }
 }
 

@@ -448,6 +448,10 @@ private:
     // position property, unless the property already holds it to the sample.
     void syncPositionFromPlayhead();
 
+    // Tells the playhead the loop the transport holds: its range while looping, else none. Run when
+    // the looping flag changes, and on the timer, which carries a range edited under a raised flag.
+    void pushLoopToPlayHead();
+
     std::optional<SyncPoint> performStopRecording();
 
     void performPositionChange();
