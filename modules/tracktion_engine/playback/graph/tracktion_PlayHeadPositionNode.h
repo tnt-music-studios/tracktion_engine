@@ -111,20 +111,26 @@ private:
         }
 
         const int64_t timelinePosition = getPlayHead().referenceSamplePositionToTimelinePosition (referenceSamplePosition);
+        const int64_t unloopedPosition = getPlayHead().referenceSamplePositionToTimelinePositionUnlooped (referenceSamplePosition);
         const double time = tracktion::graph::sampleToTime (timelinePosition, getSampleRate());
 
         playHeadTime = time;
-        publishAudibleTime (time, timelinePosition, pieceReferenceStart, numSamples, advancing);
+        publishAudibleTime (time, unloopedPosition, pieceReferenceStart, numSamples, advancing);
         updateReferencePositionOnJump = false;
     }
 
     // Publishes this piece's audible time with the instant its first sample is heard. The last
     // published record is the predecessor -- the context's seed before the first piece -- so a
     // rebuilt node judges its first piece against it too. A piece continues the record when it
-    // starts where that one ended, or where it held; anything else (a seek, a loop wrap, a tempo
-    // remap, a stop's replay, a device restart, a latency pin after a rebuild) is counted, so a
-    // reader that skips pieces still sees that the timeline jumped.
-    void publishAudibleTime (double time, int64_t timelinePosition, int64_t pieceReferenceStart,
+    // starts where that one ended, or where it held, on the play head's unlooped axis; anything
+    // else (a seek, a tempo remap, a stop's replay, a device restart, a latency pin after a
+    // rebuild) is counted, so a reader that skips pieces still sees that the timeline jumped.
+    // A loop wrap continues the record: the unlooped axis runs on through it. A loop change
+    // re-seats the play head and is counted when that moves the unlooped position. The loop is
+    // read beside the position, not with it; the play head changes a loop in three
+    // unsynchronized stores, so a piece rendered across a change may carry a mixed record, and
+    // the next piece corrects it.
+    void publishAudibleTime (double time, int64_t unloopedPosition, int64_t pieceReferenceStart,
                              int64_t numSamples, bool advancing)
     {
         const auto& processState = getProcessState();
@@ -141,15 +147,21 @@ private:
         // This node is the record's only writer, so the load reads its own last store and never retries.
         const auto previous = audibleTime.load();
         // Both values were whole samples when stored, so the round trip is exact.
-        const int64_t previousEnd = toSamples (previous.time, sampleRate)
+        const int64_t previousEnd = toSamples (previous.linearTime, sampleRate)
                                      + (previous.advancing ? toSamples (TimeDuration (previous.extent), sampleRate) : 0);
-        const bool discontinuous = timelinePosition != previousEnd;
+        const bool discontinuous = unloopedPosition != previousEnd;
 
         const auto runHeardFrom = (advancing && (! previous.advancing || discontinuous)) ? heardAt
                                                                                           : previous.runHeardFrom;
 
+        const auto& playHead = getPlayHead();
+        const std::optional<TimeRange> loop = (playHead.isLooping() && ! playHead.isRollingIntoLoop())
+                                                  ? std::optional<TimeRange> (timeRangeFromSamples (playHead.getLoopRange(), sampleRate))
+                                                  : std::nullopt;
+
         audibleTime.store ({ TimePosition::fromSeconds (time), heardAt, toSteadyDuration (numSamples), runHeardFrom,
-                             advancing, previous.discontinuities + (discontinuous ? 1u : 0u) });
+                             advancing, previous.discontinuities + (discontinuous ? 1u : 0u),
+                             TimePosition::fromSeconds (tracktion::graph::sampleToTime (unloopedPosition, sampleRate)), loop });
     }
 
     void updateFromPreviousNode (NodeGraph* nodeGraphToReplace)

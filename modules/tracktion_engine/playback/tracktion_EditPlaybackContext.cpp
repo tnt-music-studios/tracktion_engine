@@ -520,7 +520,7 @@ EditPlaybackContext::EditPlaybackContext (TransportControl& tc)
     // stands where the transport stands. createNode() runs on every rebuild during playback,
     // so seeding there would jump the record back.
     const auto now = std::chrono::steady_clock::now();
-    audibleTime.store ({ transport.getPosition(), now, {}, now, false, 0 });
+    audibleTime.store ({ transport.getPosition(), now, {}, now, false, 0, transport.getPosition(), {} });
 
     if (edit.shouldPlay())
     {

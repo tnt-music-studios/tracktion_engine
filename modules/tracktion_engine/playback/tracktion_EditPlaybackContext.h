@@ -129,9 +129,18 @@ public:
             the audible time holds during the latency countdown after a jump. */
         bool advancing = false;
 
-        /** Count of pieces whose audible time did not continue their predecessor's: seeks,
-            loop wraps, tempo remaps, stops and device restarts. */
+        /** Count of pieces that did not continue their predecessor's on the unlooped axis:
+            seeks, tempo remaps, stops, device restarts, and a loop engaged, moved or released
+            in a way that re-seats the play head. A loop wrap continues. */
         uint32_t discontinuities = 0;
+
+        /** The piece's position on the play head's unlooped axis, which runs on through every loop
+            wrap. It equals time until a loop wraps; folded into loop it is time. */
+        TimePosition linearTime;
+
+        /** The loop the piece was rendered under, or nullopt when the play head was not looping
+            (rolling in to a loop counts as not looping: nothing wraps yet). */
+        std::optional<TimeRange> loop;
     };
 
     /** Returns the most recently published AudibleTime. Retries only across an in-flight
