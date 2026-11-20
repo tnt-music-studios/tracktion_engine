@@ -110,12 +110,25 @@ private:
             referenceSamplePosition = state->referencePositionOnJump;
         }
 
-        const int64_t timelinePosition = getPlayHead().referenceSamplePositionToTimelinePosition (referenceSamplePosition);
-        const int64_t unloopedPosition = getPlayHead().referenceSamplePositionToTimelinePositionUnlooped (referenceSamplePosition);
+        const auto& playHead = getPlayHead();
+        const int64_t unloopedPosition = playHead.referenceSamplePositionToTimelinePositionUnlooped (referenceSamplePosition);
+
+        // The audible time is in the loop only once it is heard there. Behind a latent graph the
+        // play head can have rolled in to the loop while what's heard is still before its start,
+        // and folding that into the loop would report its end.
+        const bool looping = playHead.isLooping();
+        const auto loopRange = playHead.getLoopRange();
+        const std::optional<juce::Range<int64_t>> audibleLoop = (looping && ! playHead.isRollingIntoLoop() && ! loopRange.isEmpty()
+                                                                  && unloopedPosition >= loopRange.getStart())
+                                                                     ? std::optional<juce::Range<int64_t>> (loopRange)
+                                                                     : std::nullopt;
+
+        const int64_t timelinePosition = (looping && ! audibleLoop) ? unloopedPosition
+                                                                     : playHead.referenceSamplePositionToTimelinePosition (referenceSamplePosition);
         const double time = tracktion::graph::sampleToTime (timelinePosition, getSampleRate());
 
         playHeadTime = time;
-        publishAudibleTime (time, unloopedPosition, pieceReferenceStart, numSamples, advancing);
+        publishAudibleTime (time, unloopedPosition, pieceReferenceStart, numSamples, advancing, audibleLoop);
         updateReferencePositionOnJump = false;
     }
 
@@ -127,11 +140,11 @@ private:
     // rebuild) is counted, so a reader that skips pieces still sees that the timeline jumped.
     // A loop wrap continues the record: the unlooped axis runs on through it. A loop change
     // re-seats the play head and is counted when that moves the unlooped position. The loop is
-    // read beside the position, not with it; the play head changes a loop in three
-    // unsynchronized stores, so a piece rendered across a change may carry a mixed record, and
-    // the next piece corrects it.
+    // the one the audible time is heard in, read beside the position, not with it; the play head
+    // changes a loop in three unsynchronized stores, so a piece rendered across a change may carry
+    // a mixed record, and the next piece corrects it.
     void publishAudibleTime (double time, int64_t unloopedPosition, int64_t pieceReferenceStart,
-                             int64_t numSamples, bool advancing)
+                             int64_t numSamples, bool advancing, std::optional<juce::Range<int64_t>> audibleLoop)
     {
         const auto& processState = getProcessState();
         const double sampleRate = getSampleRate();
@@ -154,11 +167,8 @@ private:
         const auto runHeardFrom = (advancing && (! previous.advancing || discontinuous)) ? heardAt
                                                                                           : previous.runHeardFrom;
 
-        const auto& playHead = getPlayHead();
-        const auto loopRange = playHead.getLoopRange();
-        const std::optional<TimeRange> loop = (playHead.isLooping() && ! playHead.isRollingIntoLoop() && ! loopRange.isEmpty())
-                                                  ? std::optional<TimeRange> (timeRangeFromSamples (loopRange, sampleRate))
-                                                  : std::nullopt;
+        const std::optional<TimeRange> loop = audibleLoop ? std::optional<TimeRange> (timeRangeFromSamples (*audibleLoop, sampleRate))
+                                                          : std::nullopt;
 
         audibleTime.store ({ TimePosition::fromSeconds (time), heardAt, toSteadyDuration (numSamples), runHeardFrom,
                              advancing, previous.discontinuities + (discontinuous ? 1u : 0u),
