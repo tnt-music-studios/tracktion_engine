@@ -1368,8 +1368,8 @@ void TransportControl::performPlay()
             const auto cursorPos = position.get();
             const auto loopRange = getLoopRange();
 
-            if (cursorPos < loopRange.getStart()
-                || cursorPos > loopRange.getEnd() - 0.1s)
+            // A cursor before the loop stays where it is and rolls in to the loop from there
+            if (cursorPos > loopRange.getEnd() - 0.1s)
             {
                 position = loopRange.getStart();
             }
@@ -1408,12 +1408,23 @@ void TransportControl::performPlay()
 
         if (playbackContext)
         {
-            playHeadWrapper->play ({ transportState->startTime, transportState->endTime }, looping);
+            if (looping && position.get() < getLoopRange().getStart())
+            {
+                // The roll-in is posted before the play, so the block that starts playback is
+                // already rendered from it rather than from the loop's start
+                playHeadWrapper->setLoopTimes (true, { transportState->startTime, transportState->endTime });
+                playbackContext->postRollInToLoop (position);
+                playHeadWrapper->postPlay();
+            }
+            else
+            {
+                playHeadWrapper->play ({ transportState->startTime, transportState->endTime }, looping);
 
-            // Post the position change to be dispatched otherwise what we're effectively doing is setting
-            // the position for "this" block and it will get incremented the next block, actually starting
-            // playback 1 block from the start
-            playHeadWrapper->setPosition (position);
+                // Post the position change to be dispatched otherwise what we're effectively doing is setting
+                // the position for "this" block and it will get incremented the next block, actually starting
+                // playback 1 block from the start
+                playHeadWrapper->setPosition (position);
+            }
         }
         else
         {

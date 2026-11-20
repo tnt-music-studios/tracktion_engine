@@ -1197,6 +1197,12 @@ std::optional<TimePosition> EditPlaybackContext::getPendingPositionChange() cons
     return {};
 }
 
+void EditPlaybackContext::postRollInToLoop (TimePosition rollInStart)
+{
+    if (nodePlaybackContext)
+        nodePlaybackContext->postRollInToLoop (rollInStart.inSeconds());
+}
+
 void EditPlaybackContext::play()
 {
     if (nodePlaybackContext)

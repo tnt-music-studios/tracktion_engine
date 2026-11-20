@@ -171,6 +171,12 @@ public:
     /** Returns a pending position change if there is one. */
     std::optional<TimePosition> getPendingPositionChange() const;
 
+    /** Posts a position before the loop's start for the playhead to roll in to the loop from.
+        Like postPosition, it's dispatched at the start of the next block, so posting it before
+        postPlay() means playback starts from it.
+    */
+    void postRollInToLoop (TimePosition rollInStart);
+
     void play();
     void stop();
 
