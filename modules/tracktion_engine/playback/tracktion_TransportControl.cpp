@@ -1208,6 +1208,9 @@ bool TransportControl::isPositionUpdatingFromPlayhead() const
 }
 
 //==============================================================================
+// A roll-in or pre-roll reaches back before the edit's zero; the edit's own content never does.
+static TimePosition earliestPosition()  { return toPosition (-Edit::getMaximumLength()); }
+
 void TransportControl::setLoopIn (TimePosition t)
 {
     setLoopPoint1 (std::max (std::max (loopPoint1.get(), loopPoint2.get()), std::max (TimePosition(), t)));
@@ -1222,20 +1225,20 @@ void TransportControl::setLoopOut (TimePosition t)
 
 void TransportControl::setLoopPoint1 (TimePosition t)
 {
-    loopPoint1 = juce::jlimit (0_tp, toPosition (edit.getLength() + Edit::getMaximumLength() * 0.75), t);
+    loopPoint1 = juce::jlimit (earliestPosition(), toPosition (edit.getLength() + Edit::getMaximumLength() * 0.75), t);
 }
 
 void TransportControl::setLoopPoint2 (TimePosition t)
 {
-    loopPoint2 = juce::jlimit (0_tp, toPosition (edit.getLength() + Edit::getMaximumLength() * 0.75), t);
+    loopPoint2 = juce::jlimit (earliestPosition(), toPosition (edit.getLength() + Edit::getMaximumLength() * 0.75), t);
 }
 
 void TransportControl::setLoopRange (TimeRange times)
 {
     auto maxEndTime = toPosition (edit.getLength() + Edit::getMaximumLength() * 0.75);
 
-    loopPoint1 = juce::jlimit (0_tp, maxEndTime, times.getStart());
-    loopPoint2 = juce::jlimit (0_tp, maxEndTime, times.getEnd());
+    loopPoint1 = juce::jlimit (earliestPosition(), maxEndTime, times.getStart());
+    loopPoint2 = juce::jlimit (earliestPosition(), maxEndTime, times.getEnd());
 }
 
 TimeRange TransportControl::getLoopRange() const noexcept
@@ -1751,10 +1754,7 @@ void TransportControl::performPositionChange()
     }
     else
     {
-        // Count-in pre-roll reaches back from beat 0. A sequence with a start time stands beat 0 after
-        // the edit's zero, which stays reachable.
-        const auto minStartTime = std::min (0_tp, edit.tempoSequence.toTime (-BeatPosition::fromBeats (edit.getNumCountInBeats())) - 0.5s);
-        newPos = juce::jlimit (minStartTime, Edit::getMaximumEditEnd(), newPos);
+        newPos = juce::jlimit (earliestPosition(), Edit::getMaximumEditEnd(), newPos);
     }
 
     if (playbackContext != nullptr)
