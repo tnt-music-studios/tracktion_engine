@@ -1642,8 +1642,9 @@ bool DeviceManager::hasActivePlayingContext() const
 {
     const std::shared_lock sl (contextLock);
 
+    // A posted play counts: the rebuild would otherwise stop the playhead the moment it starts
     for (auto c : activeContexts)
-        if (c != nullptr && c->isPlaying())
+        if (c != nullptr && (c->isPlaying() || c->isPlayPending()))
             return true;
 
     return false;
